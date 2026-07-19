@@ -16,6 +16,9 @@ import { readQueue, writeQueue, makeQueueItem, makeReelQueueItem, updateQueueIte
 import { publishReelToInstagram } from './lib/instagram.mjs';
 import { uploadPublicVideo } from './lib/imghost.mjs';
 import { analyzeReel } from './lib/claude.mjs';
+import { createReelBatchStore } from './lib/reel-batch.mjs';
+import { createAwakeGuard } from './lib/mac-awake.mjs';
+import { recoverInterruptedPublications, runDuePublications } from './lib/scheduler.mjs';
 import {
   probeVideo, detectFormat, transcribeVideo, buildBlocks, buildEvents,
   renderOverlayPNGs, burnOverlays,
@@ -51,6 +54,9 @@ app.use('/output', express.static(OUTPUT_DIR));
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
 
 const REELS_DIR = path.join(__dirname, 'data', 'reels');
+const REEL_BATCH_FILE = path.join(__dirname, 'data', 'reel-batch.json');
+const reelBatchStore = createReelBatchStore({ filePath: REEL_BATCH_FILE, reelsDir: REELS_DIR });
+const withAwake = createAwakeGuard();
 const videoUpload = multer({
   storage: multer.diskStorage({
     destination: async (req, file, cb) => {
@@ -325,10 +331,22 @@ app.post('/api/queue/:id/publish-now', async (req, res) => {
   const queue = await readQueue();
   const item = queue.find((p) => p.id === req.params.id);
   if (!item) return res.status(404).json({ error: 'post não encontrado' });
+  if (item.status === 'publishing') {
+    return res.status(409).json({ error: 'esse post já está sendo publicado' });
+  }
+  if (item.status === 'unknown' && req.body?.confirmUnknown !== true) {
+    return res.status(409).json({
+      error: 'confira primeiro se o post apareceu no Instagram e confirme a nova tentativa',
+      requiresConfirmation: true,
+    });
+  }
+
+  await updateQueueItem(item.id, { status: 'publishing', error: '' });
   try {
-    const result = await publishQueueItem(item);
+    const result = await withAwake(() => publishQueueItem(item));
     await updateQueueItem(item.id, {
       status: 'published',
+      remoteId: result.id || '',
       permalink: result.permalink,
       publishedAt: new Date().toISOString(),
       error: '',
@@ -344,8 +362,13 @@ app.post('/api/queue/:id/publish-now', async (req, res) => {
 
 // Fila de processamento: aceita vários vídeos, processa um por vez.
 // item: { file, name, status: queued|processing|done|error, stage, error, result }
-const reelBatch = [];
+let reelBatch = [];
 let reelWorkerBusy = false;
+
+async function setReelState(item, patch) {
+  Object.assign(item, patch);
+  await reelBatchStore.patch(item.file, patch);
+}
 
 async function processOneReel(item, hookOverride) {
   const videoPath = path.join(REELS_DIR, item.file);
@@ -353,25 +376,25 @@ async function processOneReel(item, hookOverride) {
   const workDir = path.join(REELS_DIR, `work-${id}`);
   await mkdir(workDir, { recursive: true });
 
-  item.stage = 'analisando vídeo...';
+  await setReelState(item, { stage: 'analisando vídeo...' });
   const probe = await probeVideo(videoPath);
   const format = await detectFormat(videoPath, probe);
 
-  item.stage = 'transcrevendo áudio (Whisper)...';
+  await setReelState(item, { stage: 'transcrevendo áudio (Whisper)...' });
   const words = await transcribeVideo(videoPath, workDir);
   const blocks = buildBlocks(words);
 
-  item.stage = 'IA planejando gancho e destaques...';
+  await setReelState(item, { stage: 'IA planejando gancho e destaques...' });
   const plan = await analyzeReel({ blocks });
   const hook = (hookOverride || plan.hook || '').trim();
 
-  item.stage = 'renderizando legendas...';
+  await setReelState(item, { stage: 'renderizando legendas...' });
   const events = buildEvents(blocks, plan.highlights);
   const pngDir = path.join(workDir, 'pngs');
   const stripH = Math.round(format.canvas.width * 0.5);
   await renderOverlayPNGs({ events, hook, width: format.canvas.width, stripH, outDir: pngDir });
 
-  item.stage = 'compondo vídeo final (ffmpeg)...';
+  await setReelState(item, { stage: 'compondo vídeo final (ffmpeg)...' });
   const outFile = `${id}-final.mp4`;
   await burnOverlays({
     videoPath, events, hook, format, pngDir,
@@ -395,15 +418,12 @@ async function reelWorker() {
   try {
     let item;
     while ((item = reelBatch.find((i) => i.status === 'queued'))) {
-      item.status = 'processing';
+      await setReelState(item, { status: 'processing', stage: item.stage || 'iniciando...', error: '' });
       try {
-        item.result = await processOneReel(item, item.hookOverride);
-        item.status = 'done';
-        item.stage = '';
+        const result = await withAwake(() => processOneReel(item, item.hookOverride));
+        await setReelState(item, { result, status: 'done', stage: '', error: '' });
       } catch (err) {
-        item.status = 'error';
-        item.error = err.message;
-        item.stage = '';
+        await setReelState(item, { status: 'error', error: err.message, stage: '' });
       }
     }
   } finally {
@@ -429,27 +449,30 @@ app.post('/api/reels/process', async (req, res) => {
     return res.status(409).json({ error: 'esse vídeo já está sendo processado' });
   }
   if (existing) {
-    Object.assign(existing, {
+    await reelBatchStore.upsert({
+      ...existing,
       status: 'queued', stage: 'na fila...', error: '', result: null,
       hookOverride: (hookOverride || '').trim(),
     });
   } else {
-    reelBatch.push({
+    await reelBatchStore.upsert({
       file: path.basename(file),
       name: name || path.basename(file),
       status: 'queued', stage: 'na fila...', error: '', result: null,
       hookOverride: (hookOverride || '').trim(),
     });
   }
+  reelBatch = reelBatchStore.items;
   res.json({ ok: true });
   reelWorker();
 });
 
-app.delete('/api/reels/batch/:file', (req, res) => {
+app.delete('/api/reels/batch/:file', async (req, res) => {
   const idx = reelBatch.findIndex((i) => i.file === req.params.file);
   if (idx === -1) return res.status(404).json({ error: 'item não encontrado' });
   if (reelBatch[idx].status === 'processing') return res.status(409).json({ error: 'em processamento' });
-  reelBatch.splice(idx, 1);
+  await reelBatchStore.remove(req.params.file);
+  reelBatch = reelBatchStore.items;
   res.json({ ok: true });
 });
 
@@ -470,8 +493,10 @@ app.post('/api/reels/publish-now', async (req, res) => {
   const videoPath = path.join(REELS_DIR, path.basename(file || ''));
   if (!file || !existsSync(videoPath)) return res.status(400).json({ error: 'vídeo processado não encontrado' });
   try {
-    const videoUrl = await uploadPublicVideo(await readFile(videoPath), 'reel');
-    const result = await publishReelToInstagram({ videoUrl, caption: caption || '' });
+    const result = await withAwake(async () => {
+      const videoUrl = await uploadPublicVideo(await readFile(videoPath), 'reel');
+      return publishReelToInstagram({ videoUrl, caption: caption || '' });
+    });
     res.json(result);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -486,30 +511,33 @@ async function schedulerTick() {
   if (!instagramEnabled() || !imghostEnabled()) return;
   schedulerBusy = true;
   try {
-    const queue = await readQueue();
-    const now = new Date().toISOString();
-    const due = queue.filter((p) => p.status === 'scheduled' && p.scheduledAt <= now);
-    for (const item of due) {
-      console.log(`[agendador] publicando "${item.title}" (${item.id})...`);
-      try {
-        const result = await publishQueueItem(item);
-        await updateQueueItem(item.id, {
-          status: 'published',
-          permalink: result.permalink,
-          publishedAt: new Date().toISOString(),
-          error: '',
-        });
-        console.log(`[agendador] publicado: ${result.permalink || result.id}`);
-      } catch (err) {
-        await updateQueueItem(item.id, { status: 'error', error: err.message });
-        console.error(`[agendador] erro em "${item.title}": ${err.message}`);
-      }
-    }
+    await runDuePublications({
+      readQueue,
+      updateItem: updateQueueItem,
+      publishItem: publishQueueItem,
+      withAwake,
+    });
   } finally {
     schedulerBusy = false;
   }
 }
-setInterval(schedulerTick, 60 * 1000);
+
+app.get('/api/runtime', async (req, res) => {
+  const queue = await readQueue();
+  const next = queue
+    .filter((item) => item.status === 'scheduled' && item.scheduledAt)
+    .sort((a, b) => a.scheduledAt.localeCompare(b.scheduledAt))[0];
+  const processing = reelBatch.find((item) => item.status === 'processing');
+
+  res.json({
+    active: true,
+    processing: Boolean(processing),
+    currentStage: processing?.stage || '',
+    nextScheduledAt: next?.scheduledAt || '',
+    batchRecoveryError: reelBatchStore.recoveryError,
+    sleepWarning: 'O Mac precisa estar acordado para processar e publicar.',
+  });
+});
 
 // ------------------------------------------------------------ planejador em lote
 
@@ -559,6 +587,14 @@ app.post('/api/plan', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 4173;
+await reelBatchStore.load();
+reelBatch = reelBatchStore.items;
+await recoverInterruptedPublications({ readQueue, updateItem: updateQueueItem });
+
 app.listen(PORT, () => {
   console.log(`Posts Automáticos rodando em http://localhost:${PORT}`);
 });
+
+await schedulerTick();
+reelWorker();
+setInterval(schedulerTick, 60 * 1000);
