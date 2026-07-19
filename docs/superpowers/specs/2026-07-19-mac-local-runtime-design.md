@@ -25,6 +25,11 @@ The LaunchAgent will:
 - write stdout and stderr to persistent log files;
 - use the repository's existing `.env` file and local dependencies.
 
+Because the repository is on a removable SSD, the LaunchAgent itself uses an
+internal home directory as its working directory and keeps only its plist and small
+diagnostic logs internally. The Node executable receives macOS Full Disk Access so
+the application, model, queue, videos, and results remain on the SSD.
+
 Closing the browser will not affect the server. Logging out, shutting down, or
 putting the Mac to sleep will pause processing and publishing until macOS is active
 again. Closing the MacBook lid is not treated as an available runtime condition.
@@ -112,7 +117,8 @@ The VPS stack and volumes are retained as a rollback option; they are not delete
 
 ## Logging and errors
 
-LaunchAgent stdout and stderr are stored under `data/logs/`. Reel state changes,
+LaunchAgent stdout and stderr are stored under
+`~/Library/Logs/PostsAutomaticos/`. Reel state changes,
 recovery decisions, scheduler attempts, and publication outcomes include item IDs
 and timestamps without logging API keys or access tokens.
 

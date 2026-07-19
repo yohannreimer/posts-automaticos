@@ -394,10 +394,13 @@ git commit -m "feat: show local runtime recovery status"
 - [ ] **Step 1: Implement the installer**
 
 The installer resolves the repository directory and current Node executable, creates
-`data/logs`, and writes `~/Library/LaunchAgents/com.yrd.posts-automaticos.plist`.
+`~/Library/Logs/PostsAutomaticos`, and writes
+`~/Library/LaunchAgents/com.yrd.posts-automaticos.plist`.
 The plist uses `RunAtLoad`, `KeepAlive`, the absolute `node` path, `server.mjs`, the
-repository as `WorkingDirectory`, and persistent stdout/stderr paths. Load it with
-`launchctl bootstrap gui/$(id -u)` and restart it with `launchctl kickstart -k`.
+internal home directory as `WorkingDirectory`, the external `.env` path, a Homebrew
+aware `PATH`, and persistent stdout/stderr paths. The Node executable receives Full
+Disk Access so all application data can remain on the removable SSD. Load the plist
+with `launchctl bootstrap gui/$(id -u)` and restart it with `launchctl kickstart -k`.
 
 The script must not embed API keys; `dotenv` continues to read `.env` from the
 working directory.

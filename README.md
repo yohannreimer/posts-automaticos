@@ -40,6 +40,16 @@ Antes de instalar, confirme que o `.env` local tem as chaves do Claude, Instagra
 serviço de imagens. Se houver um `npm start` aberto no Terminal, encerre-o para
 liberar a porta 4173. Depois abra [http://localhost:4173](http://localhost:4173).
 
+Como o projeto está em um SSD externo, o macOS exige autorização para o processo
+automático acessar volumes removíveis. Na primeira instalação, o script abre
+**Ajustes do Sistema > Privacidade e Segurança > Acesso Total ao Disco** e revela o
+executável exato do Node. Adicione esse executável, ative a permissão e execute
+`npm run service:install` novamente.
+
+O código, modelo Whisper, vídeos, agenda e resultados continuam no SSD. No disco
+interno ficam somente o plist obrigatório e logs em
+`~/Library/Logs/PostsAutomaticos`.
+
 O serviço inicia no login e reinicia se o processo cair. Fechar a aba do navegador
 não interrompe processamento nem agendamento. Durante Whisper, FFmpeg ou uma
 publicação, o app usa `caffeinate` para impedir repouso por inatividade.
@@ -58,7 +68,8 @@ launchctl print "gui/$(id -u)/com.yrd.posts-automaticos"
 **Acompanhar logs:**
 
 ```bash
-tail -f data/logs/server.log data/logs/server-error.log
+tail -f "$HOME/Library/Logs/PostsAutomaticos/server.log" \
+  "$HOME/Library/Logs/PostsAutomaticos/server-error.log"
 ```
 
 **Reiniciar depois de atualizar o código:**
