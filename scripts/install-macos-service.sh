@@ -74,7 +74,20 @@ PLIST
 
 plutil -lint "$PLIST_PATH"
 launchctl bootout "$DOMAIN/$SERVICE_LABEL" 2>/dev/null || true
-launchctl bootstrap "$DOMAIN" "$PLIST_PATH"
+
+BOOTSTRAPPED=false
+for attempt in 1 2 3 4 5 6 7 8 9 10; do
+  if launchctl bootstrap "$DOMAIN" "$PLIST_PATH" 2>/dev/null; then
+    BOOTSTRAPPED=true
+    break
+  fi
+  sleep 1
+done
+if [[ "$BOOTSTRAPPED" != true ]]; then
+  echo "O launchd não conseguiu registrar o serviço depois de 10 tentativas." >&2
+  exit 1
+fi
+
 launchctl enable "$DOMAIN/$SERVICE_LABEL"
 launchctl kickstart -k "$DOMAIN/$SERVICE_LABEL"
 
