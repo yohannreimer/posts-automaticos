@@ -25,7 +25,7 @@ services:
       resources:
         limits:
           cpus: "1.50"
-          memory: 1536M
+          memory: 3072M
       restart_policy:
         condition: on-failure
       labels:

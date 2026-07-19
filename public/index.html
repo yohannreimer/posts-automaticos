@@ -62,6 +62,31 @@
       </div>
       <button class="secondary" id="planBtn">Planejar e agendar tudo</button>
       <div class="status" id="planStatus"></div>
+
+      <hr class="divider" />
+
+      <label>Reel com legenda premium (serif gold)</label>
+      <p class="hint">Envia um corte → transcreve → gancho + palavras douradas pela IA → entra na mesma agenda.</p>
+      <div class="file-drop" id="reelDrop">Clique para escolher o vídeo (.mp4/.mov)</div>
+      <input type="file" id="reelInput" accept="video/mp4,video/quicktime" hidden />
+      <div class="status" id="reelStatus"></div>
+
+      <div id="reelResult" hidden>
+        <video id="reelPreview" controls playsinline style="width:100%; border-radius:10px; margin-top:10px;"></video>
+        <label for="reelHook">Gancho (queimado no vídeo — edite e reprocesse se quiser)</label>
+        <div class="row">
+          <input type="text" id="reelHook" style="flex:3" />
+          <button class="secondary inline" id="reelReprocessBtn" style="flex:1">Reprocessar</button>
+        </div>
+        <label for="reelCaption">Legenda do post</label>
+        <textarea id="reelCaption" style="min-height:90px;"></textarea>
+        <div class="row" style="align-items:center; margin-top:10px;">
+          <input type="datetime-local" id="reelScheduleAt" />
+          <button class="secondary inline" id="reelScheduleBtn">Agendar Reel</button>
+          <button class="inline" id="reelPublishBtn">Publicar agora</button>
+        </div>
+        <div class="status" id="reelPubStatus"></div>
+      </div>
     </div>
 
     <div>

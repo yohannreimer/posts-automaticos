@@ -12,7 +12,14 @@ import { generateSlides, generateAngles } from './lib/claude.mjs';
 import { fetchYoutubeTranscript } from './lib/youtube.mjs';
 import { publishToInstagram, instagramEnabled } from './lib/instagram.mjs';
 import { uploadPublicImage, imghostEnabled } from './lib/imghost.mjs';
-import { readQueue, writeQueue, makeQueueItem, updateQueueItem } from './lib/queue.mjs';
+import { readQueue, writeQueue, makeQueueItem, makeReelQueueItem, updateQueueItem } from './lib/queue.mjs';
+import { publishReelToInstagram } from './lib/instagram.mjs';
+import { uploadPublicVideo } from './lib/imghost.mjs';
+import { analyzeReel } from './lib/claude.mjs';
+import {
+  probeVideo, detectFormat, transcribeVideo, buildBlocks, buildEvents,
+  renderOverlayPNGs, burnOverlays,
+} from './lib/captions.mjs';
 import { renderSlideHTML, CANVAS } from './templates/render.mjs';
 import { STYLES, ROLES, VARIANTS, isValidStyle, migrateLegacySlide } from './templates/registry.mjs';
 
@@ -42,6 +49,22 @@ app.use(express.static(path.join(__dirname, 'public')));
 app.use('/output', express.static(OUTPUT_DIR));
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
+
+const REELS_DIR = path.join(__dirname, 'data', 'reels');
+const videoUpload = multer({
+  storage: multer.diskStorage({
+    destination: async (req, file, cb) => {
+      await mkdir(REELS_DIR, { recursive: true });
+      cb(null, REELS_DIR);
+    },
+    filename: (req, file, cb) => {
+      const ext = path.extname(file.originalname || '.mp4') || '.mp4';
+      cb(null, `reel-${Date.now()}${ext}`);
+    },
+  }),
+  limits: { fileSize: 500 * 1024 * 1024 },
+});
+app.use('/reels', express.static(REELS_DIR));
 
 const EMPTY_CAROUSEL = { style: 'grid', contentFormat: '', caption: '', slides: [] };
 
@@ -217,6 +240,10 @@ app.post('/api/publish', async (req, res) => {
 // ------------------------------------------------------------ fila / agenda
 
 async function publishQueueItem(item) {
+  if (item.kind === 'reel') {
+    const videoUrl = await uploadPublicVideo(await readFile(item.videoPath), 'reel');
+    return publishReelToInstagram({ videoUrl, caption: item.caption || '' });
+  }
   const images = await renderCarouselPNGs(item.carousel);
   const imageUrls = [];
   for (const { fileName, buffer } of images) {
@@ -271,6 +298,7 @@ app.post('/api/queue/:id/load', async (req, res) => {
   const queue = await readQueue();
   const item = queue.find((p) => p.id === req.params.id);
   if (!item) return res.status(404).json({ error: 'post não encontrado' });
+  if (item.kind === 'reel') return res.status(400).json({ error: 'post de Reel não abre no editor de slides' });
   await writeCarousel(item.carousel);
   res.json(item.carousel);
 });
@@ -290,6 +318,104 @@ app.post('/api/queue/:id/publish-now', async (req, res) => {
     res.json(result);
   } catch (err) {
     await updateQueueItem(item.id, { status: 'error', error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ------------------------------------------------------------ reels
+
+const reelJob = {
+  running: false, stage: '', error: '',
+  result: null, // { file, hook, caption, transcript, format }
+};
+
+app.get('/api/reels/status', (req, res) => res.json(reelJob));
+
+app.post('/api/reels/upload', videoUpload.single('video'), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'nenhum vídeo enviado' });
+  res.json({ file: req.file.filename, size: req.file.size });
+});
+
+// Processa: transcreve, IA planeja (gancho/destaques/legenda), legenda e queima.
+app.post('/api/reels/process', async (req, res) => {
+  const { file, hookOverride } = req.body || {};
+  if (reelJob.running) return res.status(409).json({ error: 'já existe um processamento em andamento' });
+  const videoPath = path.join(REELS_DIR, path.basename(file || ''));
+  if (!file || !existsSync(videoPath)) return res.status(400).json({ error: 'vídeo não encontrado — envie primeiro' });
+
+  Object.assign(reelJob, { running: true, stage: 'analisando vídeo...', error: '', result: null });
+  res.json({ ok: true });
+
+  (async () => {
+    try {
+      const id = path.basename(file, path.extname(file));
+      const workDir = path.join(REELS_DIR, `work-${id}`);
+      await mkdir(workDir, { recursive: true });
+
+      const probe = await probeVideo(videoPath);
+      const format = await detectFormat(videoPath, probe);
+
+      reelJob.stage = 'transcrevendo áudio (Whisper)...';
+      const words = await transcribeVideo(videoPath, workDir);
+      const blocks = buildBlocks(words);
+
+      reelJob.stage = 'IA planejando gancho e destaques...';
+      const plan = await analyzeReel({ blocks });
+      const hook = (hookOverride || plan.hook || '').trim();
+
+      reelJob.stage = 'renderizando legendas...';
+      const events = buildEvents(blocks, plan.highlights);
+      const pngDir = path.join(workDir, 'pngs');
+      const stripH = Math.round(probe.width * 0.5);
+      await renderOverlayPNGs({ events, hook, width: probe.width, stripH, outDir: pngDir });
+
+      reelJob.stage = 'compondo vídeo final (ffmpeg)...';
+      const outFile = `${id}-final.mp4`;
+      await burnOverlays({
+        videoPath, events, hook, probe, format, pngDir,
+        outPath: path.join(REELS_DIR, outFile), workDir,
+      });
+
+      reelJob.result = {
+        file: outFile,
+        sourceFile: path.basename(videoPath),
+        hook,
+        caption: plan.caption,
+        transcript: words.map((w) => w.t).join(' '),
+        format: format.type,
+        duration: probe.duration,
+      };
+      reelJob.stage = 'pronto';
+    } catch (err) {
+      reelJob.error = err.message;
+      reelJob.stage = '';
+    } finally {
+      reelJob.running = false;
+    }
+  })();
+});
+
+app.post('/api/reels/schedule', async (req, res) => {
+  const { file, caption, title, scheduledAt } = req.body || {};
+  if (!scheduledAt) return res.status(400).json({ error: 'scheduledAt é obrigatório' });
+  const videoPath = path.join(REELS_DIR, path.basename(file || ''));
+  if (!file || !existsSync(videoPath)) return res.status(400).json({ error: 'vídeo processado não encontrado' });
+  const queue = await readQueue();
+  const item = makeReelQueueItem({ videoPath, caption, title }, scheduledAt);
+  queue.push(item);
+  await writeQueue(queue);
+  res.json(item);
+});
+
+app.post('/api/reels/publish-now', async (req, res) => {
+  const { file, caption } = req.body || {};
+  const videoPath = path.join(REELS_DIR, path.basename(file || ''));
+  if (!file || !existsSync(videoPath)) return res.status(400).json({ error: 'vídeo processado não encontrado' });
+  try {
+    const videoUrl = await uploadPublicVideo(await readFile(videoPath), 'reel');
+    const result = await publishReelToInstagram({ videoUrl, caption: caption || '' });
+    res.json(result);
+  } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });

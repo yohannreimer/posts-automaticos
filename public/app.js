@@ -14,6 +14,8 @@ const el = {};
   'caption', 'publishBtn', 'publishStatus', 'scheduleAt', 'scheduleBtn', 'queueList',
   'planCount', 'planDate', 'planTime', 'planBtn', 'planStatus',
   'queueCalendar', 'viewListBtn', 'viewCalBtn', 'calPrev', 'calNext', 'calLabel', 'calGrid',
+  'reelDrop', 'reelInput', 'reelStatus', 'reelResult', 'reelPreview', 'reelHook',
+  'reelReprocessBtn', 'reelCaption', 'reelScheduleAt', 'reelScheduleBtn', 'reelPublishBtn', 'reelPubStatus',
 ].forEach((id) => (el[id] = document.getElementById(id)));
 
 const FORMAT_LABELS = {
@@ -564,10 +566,137 @@ el.planBtn.addEventListener('click', async () => {
   pollPlanStatus();
 });
 
+// ------------------------------------------------------------ reels
+
+const reel = { sourceFile: '', result: null };
+
+function pollReelStatus() {
+  const timer = setInterval(async () => {
+    const s = await (await fetch('/api/reels/status')).json();
+    if (s.running) {
+      setStatus(el.reelStatus, s.stage);
+      return;
+    }
+    clearInterval(timer);
+    if (s.error) {
+      setStatus(el.reelStatus, `Erro: ${s.error}`, 'error');
+      return;
+    }
+    if (s.result) {
+      reel.result = s.result;
+      setStatus(el.reelStatus, `Pronto! Formato detectado: ${s.result.format === 'horizontal' ? 'horizontal com faixas (gancho fixo em cima)' : 'vertical (gancho nos primeiros segundos)'}.`, 'ok');
+      el.reelResult.hidden = false;
+      el.reelPreview.src = `/reels/${s.result.file}?t=${Date.now()}`;
+      el.reelHook.value = s.result.hook || '';
+      el.reelCaption.value = s.result.caption || '';
+    }
+  }, 3000);
+}
+
+async function startReelProcess(hookOverride) {
+  setStatus(el.reelStatus, 'Processando... (transcrição + IA + render — alguns minutos)');
+  el.reelResult.hidden = true;
+  const res = await fetch('/api/reels/process', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ file: reel.sourceFile, hookOverride: hookOverride || '' }),
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    setStatus(el.reelStatus, data.error, 'error');
+    return;
+  }
+  pollReelStatus();
+}
+
+el.reelDrop.addEventListener('click', () => el.reelInput.click());
+el.reelInput.addEventListener('change', async () => {
+  const file = el.reelInput.files[0];
+  if (!file) return;
+  setStatus(el.reelStatus, `Enviando ${file.name} (${(file.size / 1e6).toFixed(0)}MB)...`);
+  const formData = new FormData();
+  formData.append('video', file);
+  const res = await fetch('/api/reels/upload', { method: 'POST', body: formData });
+  const data = await res.json();
+  if (!res.ok) {
+    setStatus(el.reelStatus, data.error, 'error');
+    return;
+  }
+  reel.sourceFile = data.file;
+  startReelProcess();
+});
+
+el.reelReprocessBtn.addEventListener('click', () => {
+  if (!reel.sourceFile) return;
+  startReelProcess(el.reelHook.value.trim());
+});
+
+el.reelScheduleBtn.addEventListener('click', async () => {
+  if (!reel.result) return;
+  if (!el.reelScheduleAt.value) {
+    setStatus(el.reelPubStatus, 'Escolha data e hora.', 'error');
+    return;
+  }
+  const res = await fetch('/api/reels/schedule', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      file: reel.result.file,
+      caption: el.reelCaption.value,
+      title: el.reelHook.value || reel.result.hook,
+      scheduledAt: new Date(el.reelScheduleAt.value).toISOString(),
+    }),
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    setStatus(el.reelPubStatus, data.error, 'error');
+    return;
+  }
+  setStatus(el.reelPubStatus, `Reel agendado para ${fmtDate(data.scheduledAt)}.`, 'ok');
+  loadQueue();
+});
+
+el.reelPublishBtn.addEventListener('click', async () => {
+  if (!reel.result) return;
+  if (!confirm('Publicar este Reel no Instagram AGORA?')) return;
+  el.reelPublishBtn.disabled = true;
+  setStatus(el.reelPubStatus, 'Publicando Reel... (o Instagram processa o vídeo — 1-3 min)');
+  try {
+    const res = await fetch('/api/reels/publish-now', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ file: reel.result.file, caption: el.reelCaption.value }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'erro desconhecido');
+    el.reelPubStatus.innerHTML = data.permalink
+      ? `Publicado! <a href="${data.permalink}" target="_blank">${data.permalink}</a>`
+      : `Publicado! (id ${data.id})`;
+    el.reelPubStatus.className = 'status ok';
+  } catch (err) {
+    setStatus(el.reelPubStatus, err.message, 'error');
+  } finally {
+    el.reelPublishBtn.disabled = false;
+  }
+});
+
 (async function init() {
   await loadMeta();
   await loadCarousel();
   await loadQueue();
+  // retoma acompanhamento de um Reel em processamento ou mostra o último pronto
+  const rs = await (await fetch('/api/reels/status')).json();
+  if (rs.running) {
+    pollReelStatus();
+  } else if (rs.result) {
+    reel.sourceFile = rs.result.sourceFile;
+    reel.result = rs.result;
+    el.reelResult.hidden = false;
+    el.reelPreview.src = `/reels/${rs.result.file}`;
+    el.reelHook.value = rs.result.hook || '';
+    el.reelCaption.value = rs.result.caption || '';
+    setStatus(el.reelStatus, 'Último Reel processado carregado.', 'ok');
+  }
   // defaults do planejador: amanhã, 18h
   const tomorrow = new Date(Date.now() + 24 * 3600 * 1000);
   el.planDate.value = tomorrow.toISOString().slice(0, 10);
