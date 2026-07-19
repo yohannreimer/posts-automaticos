@@ -9,12 +9,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # whisper.cpp (transcrição local, grátis)
 RUN git clone --depth 1 https://github.com/ggml-org/whisper.cpp /tmp/whisper.cpp \
-    && cmake -S /tmp/whisper.cpp -B /tmp/whisper.cpp/build -DCMAKE_BUILD_TYPE=Release \
+    && cmake -S /tmp/whisper.cpp -B /tmp/whisper.cpp/build \
+       -DCMAKE_BUILD_TYPE=Release \
+       -DCMAKE_INSTALL_PREFIX=/usr/local \
     && cmake --build /tmp/whisper.cpp/build -j --config Release \
-    && cp /tmp/whisper.cpp/build/bin/whisper-cli /usr/local/bin/ \
-    && cp /tmp/whisper.cpp/build/src/libwhisper.so* /usr/local/lib/ 2>/dev/null; \
-       cp /tmp/whisper.cpp/build/ggml/src/libggml*.so /usr/local/lib/ 2>/dev/null; \
-       ldconfig \
+    && cmake --install /tmp/whisper.cpp/build \
+    && ldconfig \
+    && ldd /usr/local/bin/whisper-cli \
+    && ! ldd /usr/local/bin/whisper-cli | grep -q 'not found' \
+    && whisper-cli --help >/dev/null 2>&1 \
     && rm -rf /tmp/whisper.cpp
 
 # Modelo de transcrição (large-v3-turbo quantizado, ótimo em português)
