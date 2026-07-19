@@ -1,0 +1,14 @@
+services:
+  posts-automaticos:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "4173:4173"
+    env_file: .env
+    environment:
+      # Horários do planejador ("18:00") são interpretados neste fuso
+      - TZ=America/Sao_Paulo
+    volumes:
+      # Persistem fora do container: agenda, carrossel atual e PNGs exportados
+      - ./data:/app/data
+      - ./output:/app/output

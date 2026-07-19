@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <title>Posts Automáticos</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <h1>Posts Automáticos</h1>
+  <p class="subtitle">Cole uma transcrição/resumo (ou link do YouTube), gere o carrossel, ajuste e exporte as imagens.</p>
+
+  <div class="layout">
+    <div class="panel">
+      <label for="ytUrl">Link do YouTube</label>
+      <div class="row">
+        <input type="text" id="ytUrl" placeholder="https://youtube.com/watch?v=..." style="flex:3" />
+        <button class="secondary inline" id="ytBtn" style="flex:1">Buscar</button>
+      </div>
+      <div class="status" id="ytStatus"></div>
+
+      <label for="rawText">Texto de origem (transcrição, resumo, notas)</label>
+      <textarea id="rawText" placeholder="Cole aqui o texto bruto... ou busque de um vídeo acima"></textarea>
+
+      <label for="fileInput">ou carregue um arquivo .txt/.md</label>
+      <div class="file-drop" id="fileDrop">Clique para escolher um arquivo</div>
+      <input type="file" id="fileInput" accept=".txt,.md" hidden />
+
+      <div class="row">
+        <div>
+          <label for="slideCount">Nº de slides (aprox.)</label>
+          <input type="number" id="slideCount" value="8" min="4" max="15" />
+        </div>
+        <div>
+          <label for="author">Assinatura (opcional)</label>
+          <input type="text" id="author" placeholder="por Yohann" />
+        </div>
+      </div>
+
+      <label for="topic">Ângulo/foco (opcional)</label>
+      <input type="text" id="topic" placeholder="ex: por que ninguém confia no seu conteúdo" />
+
+      <button id="generateBtn">Gerar carrossel</button>
+      <div class="status" id="genStatus"></div>
+
+      <hr class="divider" />
+
+      <label>Planejar vários dias de uma vez</label>
+      <p class="hint">Usa o mesmo texto de origem acima: a IA divide em ângulos diferentes e agenda 1 post por dia.</p>
+      <div class="row">
+        <div>
+          <label for="planCount">Nº de posts</label>
+          <input type="number" id="planCount" value="10" min="1" max="30" />
+        </div>
+        <div>
+          <label for="planDate">A partir de</label>
+          <input type="date" id="planDate" />
+        </div>
+        <div>
+          <label for="planTime">Horário</label>
+          <input type="time" id="planTime" value="18:00" />
+        </div>
+      </div>
+      <button class="secondary" id="planBtn">Planejar e agendar tudo</button>
+      <div class="status" id="planStatus"></div>
+    </div>
+
+    <div>
+      <div class="export-bar">
+        <div class="left-controls">
+          <select id="styleSelect" title="Estilo visual do carrossel"></select>
+          <span class="status" id="formatLabel"></span>
+          <span class="status" id="slideCountLabel"></span>
+        </div>
+        <div style="display:flex; gap:10px;">
+          <button class="secondary" id="addSlideBtn" style="width:auto;">+ slide</button>
+          <button id="exportBtn" style="width:auto;">Exportar imagens</button>
+        </div>
+      </div>
+      <div class="status" id="exportStatus"></div>
+      <div class="results" id="results"></div>
+
+      <div class="panel publish-panel">
+        <label for="caption">Legenda do post (gerada pela IA, edite à vontade)</label>
+        <textarea id="caption" placeholder="A legenda aparece aqui depois de gerar o carrossel..."></textarea>
+        <div class="row" style="align-items:center;">
+          <button id="publishBtn">Publicar no Instagram</button>
+          <input type="datetime-local" id="scheduleAt" title="Data e hora do agendamento" />
+          <button class="secondary" id="scheduleBtn">Agendar este carrossel</button>
+        </div>
+        <div class="status" id="publishStatus"></div>
+      </div>
+
+      <div class="panel queue-panel">
+        <div class="queue-header">
+          <label>Agenda de publicação</label>
+          <div class="view-toggle">
+            <button class="toggle-btn active" id="viewListBtn">Lista</button>
+            <button class="toggle-btn" id="viewCalBtn">Calendário</button>
+          </div>
+          <span class="hint" id="queueHint">Publica sozinho no horário, enquanto o servidor estiver no ar.</span>
+        </div>
+        <div id="queueList"><div class="empty-state small">Nenhum post agendado ainda.</div></div>
+        <div id="queueCalendar" hidden>
+          <div class="cal-nav">
+            <button class="icon-btn" id="calPrev">‹</button>
+            <span id="calLabel"></span>
+            <button class="icon-btn" id="calNext">›</button>
+          </div>
+          <div class="cal-grid" id="calGrid"></div>
+        </div>
+      </div>
+
+      <div id="slidesContainer"><div class="empty-state">Nenhum slide ainda. Gere um carrossel ao lado.</div></div>
+    </div>
+  </div>
+
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
