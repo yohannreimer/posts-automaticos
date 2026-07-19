@@ -25,6 +25,66 @@ cp .env.example .env   # preencha as chaves
 npm start              # http://localhost:4173
 ```
 
+## Rodar permanentemente no Mac
+
+Para usar a velocidade local do Whisper e do FFmpeg sem manter um Terminal aberto,
+instale o app como um serviço do seu usuário no macOS:
+
+```bash
+npm install
+npx playwright install chromium
+npm run service:install
+```
+
+Antes de instalar, confirme que o `.env` local tem as chaves do Claude, Instagram e
+serviço de imagens. Se houver um `npm start` aberto no Terminal, encerre-o para
+liberar a porta 4173. Depois abra [http://localhost:4173](http://localhost:4173).
+
+O serviço inicia no login e reinicia se o processo cair. Fechar a aba do navegador
+não interrompe processamento nem agendamento. Durante Whisper, FFmpeg ou uma
+publicação, o app usa `caffeinate` para impedir repouso por inatividade.
+
+Isso não impede repouso manual, logout, desligamento ou o fechamento da tampa. Se o
+Mac estiver indisponível no horário, o post permanece na agenda e é tentado quando o
+servidor voltar. Uma interrupção no meio da chamada ao Instagram exige conferência
+manual antes de tentar novamente, evitando duplicatas automáticas.
+
+**Conferir o serviço:**
+
+```bash
+launchctl print "gui/$(id -u)/com.yrd.posts-automaticos"
+```
+
+**Acompanhar logs:**
+
+```bash
+tail -f data/logs/server.log data/logs/server-error.log
+```
+
+**Reiniciar depois de atualizar o código:**
+
+```bash
+launchctl kickstart -k "gui/$(id -u)/com.yrd.posts-automaticos"
+```
+
+**Remover o serviço sem apagar dados:**
+
+```bash
+npm run service:uninstall
+```
+
+### Migração segura da VPS para o Mac
+
+1. Confira todos os itens futuros na Agenda da VPS e conclua, remova ou recrie-os no
+   Mac.
+2. Faça uma publicação manual curta pelo Mac.
+3. Faça um agendamento curto e confirme que ele publica sozinho.
+4. Somente depois disso, pare a stack no Portainer. Não delete a stack nem seus
+   volumes; eles ficam disponíveis como plano de retorno.
+
+Não mantenha agendas independentes ativas no Mac e na VPS ao mesmo tempo, pois os
+dois servidores podem publicar conteúdo duplicado.
+
 ## Deploy na VPS (Docker)
 
 ```bash

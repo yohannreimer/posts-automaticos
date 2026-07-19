@@ -6,7 +6,9 @@
   "scripts": {
     "start": "node server.mjs",
     "dev": "node server.mjs",
-    "test": "node --test"
+    "test": "node --test",
+    "service:install": "bash scripts/install-macos-service.sh",
+    "service:uninstall": "bash scripts/uninstall-macos-service.sh"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.32.1",
