@@ -17,6 +17,7 @@ const el = {};
   'reelDrop', 'reelInput', 'reelBatchControls', 'reelStartDate', 'reelStartTime',
   'reelDistributeBtn', 'reelScheduleAllBtn', 'reelBatchStatus', 'reelBatchList',
   'itemModal', 'modalTitle', 'modalClose', 'modalBody', 'modalActions', 'modalStatus',
+  'runtimeStatus',
 ].forEach((id) => (el[id] = document.getElementById(id)));
 
 const FORMAT_LABELS = {
@@ -28,7 +29,13 @@ const FORMAT_LABELS = {
   stats: 'formato: estatísticas',
   narrativa: 'formato: narrativa',
 };
-const STATUS_LABELS = { scheduled: 'agendado', published: 'publicado', error: 'erro' };
+const STATUS_LABELS = {
+  scheduled: 'agendado',
+  publishing: 'publicando',
+  published: 'publicado',
+  error: 'erro',
+  unknown: 'confirmar no Instagram',
+};
 
 function setStatus(node, msg, type) {
   node.textContent = msg || '';
@@ -44,6 +51,27 @@ function isoToLocalInput(iso) {
   const d = new Date(iso);
   d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
   return d.toISOString().slice(0, 16);
+}
+
+async function loadRuntimeStatus() {
+  try {
+    const res = await fetch('/api/runtime');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const runtime = await res.json();
+    const details = runtime.processing
+      ? `Processando: ${runtime.currentStage || 'em andamento'}`
+      : runtime.nextScheduledAt
+        ? `Próximo: ${fmtDate(runtime.nextScheduledAt)}`
+        : 'Nenhuma publicação agendada';
+    el.runtimeStatus.textContent = runtime.batchRecoveryError
+      ? `⚠ ${runtime.batchRecoveryError}`
+      : `● Mac ativo · ${details}`;
+    el.runtimeStatus.className = `runtime-status${runtime.batchRecoveryError ? ' warning' : ' ok'}`;
+    el.runtimeStatus.title = runtime.batchRecoveryError || runtime.sleepWarning || '';
+  } catch {
+    el.runtimeStatus.textContent = '● Servidor local indisponível';
+    el.runtimeStatus.className = 'runtime-status error';
+  }
 }
 
 // ------------------------------------------------------------ abas
@@ -483,7 +511,7 @@ function renderQueueList(queue) {
     row.innerHTML = `
       <span class="q-title" style="cursor:pointer" title="clique para ver">${item.title}</span>
       <span class="q-status ${item.status}" title="${item.error || ''}">${STATUS_LABELS[item.status] || item.status}</span>
-      <input type="datetime-local" value="${isoToLocalInput(item.scheduledAt)}" ${item.status === 'published' ? 'disabled' : ''} />
+      <input type="datetime-local" value="${isoToLocalInput(item.scheduledAt)}" ${['published', 'publishing', 'unknown'].includes(item.status) ? 'disabled' : ''} />
       <button class="icon-btn danger" data-action="del" title="Remover">✕</button>
     `;
     row.querySelector('.q-title').addEventListener('click', () => openItemModal(item));
@@ -553,6 +581,13 @@ function openItemModal(item) {
   if (item.permalink) {
     addBtn('Abrir no Instagram', 'secondary', () => window.open(item.permalink, '_blank'));
   }
+  if (item.status === 'unknown') {
+    setStatus(
+      el.modalStatus,
+      item.error || 'Confira se este post apareceu no Instagram antes de tentar novamente.',
+      'error'
+    );
+  }
   if (item.status !== 'published') {
     if (item.kind !== 'reel') {
       addBtn('Abrir no editor', 'secondary', async () => {
@@ -562,11 +597,19 @@ function openItemModal(item) {
         switchTab('post');
       });
     }
-    addBtn('Publicar agora', '', async (e) => {
+    if (item.status !== 'publishing') addBtn('Publicar agora', '', async (e) => {
+      if (item.status === 'unknown') {
+        if (!confirm('Você conferiu o Instagram e confirmou que este post NÃO foi publicado?')) return;
+        if (!confirm('Publicar novamente agora? Uma confirmação errada pode criar um post duplicado.')) return;
+      }
       if (!confirm(`Publicar "${item.title}" no Instagram AGORA?`)) return;
       e.target.disabled = true;
       setStatus(el.modalStatus, 'Publicando...');
-      const res = await fetch(`/api/queue/${item.id}/publish-now`, { method: 'POST' });
+      const res = await fetch(`/api/queue/${item.id}/publish-now`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ confirmUnknown: item.status === 'unknown' }),
+      });
       const data = await res.json();
       if (!res.ok) setStatus(el.modalStatus, data.error, 'error');
       else {
@@ -778,6 +821,8 @@ el.reelScheduleAllBtn.addEventListener('click', async () => {
   await loadMeta();
   await loadCarousel();
   await loadQueue();
+  await loadRuntimeStatus();
+  setInterval(loadRuntimeStatus, 15000);
 
   const tomorrow = new Date(Date.now() + 24 * 3600 * 1000);
   el.planDate.value = tomorrow.toISOString().slice(0, 10);

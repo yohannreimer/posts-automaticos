@@ -25,6 +25,13 @@ h1 { font-size: 20px; margin: 0 0 4px; }
   display: flex; justify-content: space-between; align-items: center;
   gap: 20px; flex-wrap: wrap; margin-bottom: 26px;
 }
+.runtime-status {
+  color: var(--muted); font-size: 12px; border: 1px solid var(--border);
+  background: var(--panel); border-radius: 999px; padding: 7px 11px;
+}
+.runtime-status.ok { color: #63d68a; }
+.runtime-status.warning { color: #ffd36a; border-color: #5a4822; }
+.runtime-status.error { color: #ff8a8a; border-color: #5a2929; }
 .tabs { display: flex; gap: 6px; background: var(--panel); border: 1px solid var(--border);
   border-radius: 12px; padding: 6px; }
 .tab-btn {
@@ -237,8 +244,10 @@ button.inline { margin-top: 0; }
 .queue-item .q-status { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px;
   padding: 4px 8px; border-radius: 6px; }
 .q-status.scheduled { background: #23324a; color: #8db8ff; }
+.q-status.publishing { background: #483b1f; color: #ffd36a; }
 .q-status.published { background: #1e3a28; color: #63d68a; }
 .q-status.error { background: #4a2222; color: #ff8a8a; }
+.q-status.unknown { background: #4a3522; color: #ffc27a; }
 .queue-item a { color: var(--accent); }
 
 .view-toggle { display: flex; gap: 0; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
@@ -263,5 +272,7 @@ button.inline { margin-top: 0; }
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer;
 }
 .cal-chip.scheduled { background: #23324a; color: #8db8ff; }
+.cal-chip.publishing { background: #483b1f; color: #ffd36a; }
 .cal-chip.published { background: #1e3a28; color: #63d68a; }
 .cal-chip.error { background: #4a2222; color: #ff8a8a; }
+.cal-chip.unknown { background: #4a3522; color: #ffc27a; }
