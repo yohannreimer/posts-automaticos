@@ -584,7 +584,10 @@ function pollReelStatus() {
     }
     if (s.result) {
       reel.result = s.result;
-      setStatus(el.reelStatus, `Pronto! Formato detectado: ${s.result.format === 'horizontal' ? 'horizontal com faixas (gancho fixo em cima)' : 'vertical (gancho nos primeiros segundos)'}.`, 'ok');
+      const fmtLabel = s.result.format === 'vertical'
+        ? 'vertical (gancho nos primeiros segundos)'
+        : 'horizontal → tela 9:16 com faixas (gancho fixo em cima)';
+      setStatus(el.reelStatus, `Pronto! Formato: ${fmtLabel}.`, 'ok');
       el.reelResult.hidden = false;
       el.reelPreview.src = `/reels/${s.result.file}?t=${Date.now()}`;
       el.reelHook.value = s.result.hook || '';

@@ -366,13 +366,13 @@ app.post('/api/reels/process', async (req, res) => {
       reelJob.stage = 'renderizando legendas...';
       const events = buildEvents(blocks, plan.highlights);
       const pngDir = path.join(workDir, 'pngs');
-      const stripH = Math.round(probe.width * 0.5);
-      await renderOverlayPNGs({ events, hook, width: probe.width, stripH, outDir: pngDir });
+      const stripH = Math.round(format.canvas.width * 0.5);
+      await renderOverlayPNGs({ events, hook, width: format.canvas.width, stripH, outDir: pngDir });
 
       reelJob.stage = 'compondo vídeo final (ffmpeg)...';
       const outFile = `${id}-final.mp4`;
       await burnOverlays({
-        videoPath, events, hook, probe, format, pngDir,
+        videoPath, events, hook, format, pngDir,
         outPath: path.join(REELS_DIR, outFile), workDir,
       });
 
