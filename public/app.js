@@ -14,8 +14,9 @@ const el = {};
   'caption', 'publishBtn', 'publishStatus', 'scheduleAt', 'scheduleBtn', 'queueList',
   'planCount', 'planDate', 'planTime', 'planBtn', 'planStatus',
   'queueCalendar', 'viewListBtn', 'viewCalBtn', 'calPrev', 'calNext', 'calLabel', 'calGrid',
-  'reelDrop', 'reelInput', 'reelStatus', 'reelResult', 'reelPreview', 'reelHook',
-  'reelReprocessBtn', 'reelCaption', 'reelScheduleAt', 'reelScheduleBtn', 'reelPublishBtn', 'reelPubStatus',
+  'reelDrop', 'reelInput', 'reelBatchControls', 'reelStartDate', 'reelStartTime',
+  'reelDistributeBtn', 'reelScheduleAllBtn', 'reelBatchStatus', 'reelBatchList',
+  'itemModal', 'modalTitle', 'modalClose', 'modalBody', 'modalActions', 'modalStatus',
 ].forEach((id) => (el[id] = document.getElementById(id)));
 
 const FORMAT_LABELS = {
@@ -27,11 +28,41 @@ const FORMAT_LABELS = {
   stats: 'formato: estatísticas',
   narrativa: 'formato: narrativa',
 };
+const STATUS_LABELS = { scheduled: 'agendado', published: 'publicado', error: 'erro' };
 
 function setStatus(node, msg, type) {
   node.textContent = msg || '';
   node.className = 'status' + (type ? ` ${type}` : '');
 }
+
+function fmtDate(iso) {
+  if (!iso) return '';
+  return new Date(iso).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+}
+
+function isoToLocalInput(iso) {
+  const d = new Date(iso);
+  d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
+  return d.toISOString().slice(0, 16);
+}
+
+// ------------------------------------------------------------ abas
+
+document.querySelectorAll('.tab-btn').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.tab-btn').forEach((b) => b.classList.toggle('active', b === btn));
+    document.querySelectorAll('.tab-page').forEach((p) =>
+      p.classList.toggle('active', p.id === `tab-${btn.dataset.tab}`)
+    );
+    if (btn.dataset.tab === 'agenda') loadQueue();
+  });
+});
+
+function switchTab(name) {
+  document.querySelector(`.tab-btn[data-tab="${name}"]`).click();
+}
+
+// ------------------------------------------------------------ carrossel (Criar post)
 
 async function loadMeta() {
   const res = await fetch('/api/meta');
@@ -73,8 +104,7 @@ function options(list, selected) {
 }
 
 function scaleFrame(wrap, iframe) {
-  const width = wrap.clientWidth;
-  iframe.style.transform = `scale(${width / 1080})`;
+  iframe.style.transform = `scale(${wrap.clientWidth / 1080})`;
 }
 
 function refreshAllFrames() {
@@ -138,8 +168,6 @@ function renderSlides() {
       input.addEventListener('change', async () => {
         state.slides[i][input.dataset.field] = input.value;
         await saveCarousel();
-        // role/variant mudam o layout do próprio slide; ordem/total afetam
-        // vizinhos no estilo panorâmico — mais simples recarregar todos
         refreshAllFrames();
       });
     });
@@ -175,14 +203,8 @@ el.styleSelect.addEventListener('change', async () => {
 el.addSlideBtn.addEventListener('click', async () => {
   state.slides.push({
     id: `s${Date.now()}`,
-    role: 'content',
-    variant: 'light',
-    text: 'Novo slide',
-    badge: '',
-    eyebrow: '',
-    signature: '',
-    highlight: '',
-    decoration: '',
+    role: 'content', variant: 'light', text: 'Novo slide',
+    badge: '', eyebrow: '', signature: '', highlight: '', decoration: '',
   });
   await saveCarousel();
   renderSlides();
@@ -190,10 +212,7 @@ el.addSlideBtn.addEventListener('click', async () => {
 
 el.ytBtn.addEventListener('click', async () => {
   const url = el.ytUrl.value.trim();
-  if (!url) {
-    setStatus(el.ytStatus, 'Cole um link do YouTube primeiro.', 'error');
-    return;
-  }
+  if (!url) return setStatus(el.ytStatus, 'Cole um link do YouTube primeiro.', 'error');
   el.ytBtn.disabled = true;
   setStatus(el.ytStatus, 'Buscando transcrição...');
   try {
@@ -226,10 +245,7 @@ el.fileInput.addEventListener('change', async () => {
 
 el.generateBtn.addEventListener('click', async () => {
   const rawText = el.rawText.value.trim();
-  if (!rawText) {
-    setStatus(el.genStatus, 'Cole um texto primeiro.', 'error');
-    return;
-  }
+  if (!rawText) return setStatus(el.genStatus, 'Cole um texto primeiro.', 'error');
   el.generateBtn.disabled = true;
   setStatus(el.genStatus, 'Gerando com a IA...');
   try {
@@ -261,10 +277,7 @@ el.generateBtn.addEventListener('click', async () => {
 });
 
 el.exportBtn.addEventListener('click', async () => {
-  if (!state.slides.length) {
-    setStatus(el.exportStatus, 'Nenhum slide pra exportar.', 'error');
-    return;
-  }
+  if (!state.slides.length) return setStatus(el.exportStatus, 'Nenhum slide pra exportar.', 'error');
   el.exportBtn.disabled = true;
   setStatus(el.exportStatus, 'Exportando imagens...');
   try {
@@ -288,25 +301,14 @@ el.caption.addEventListener('change', async () => {
 });
 
 el.publishBtn.addEventListener('click', async () => {
-  if (!state.slides.length) {
-    setStatus(el.publishStatus, 'Nenhum slide pra publicar.', 'error');
-    return;
-  }
+  if (!state.slides.length) return setStatus(el.publishStatus, 'Nenhum slide pra publicar.', 'error');
   const pub = state.meta.publish || {};
-  if (!pub.instagram || !pub.imghost) {
-    setStatus(
-      el.publishStatus,
-      'Configure IG_ACCESS_TOKEN, IG_USER_ID e IMGBB_API_KEY no .env (veja SETUP-INSTAGRAM.md) e reinicie o servidor.',
-      'error'
-    );
-    return;
+  if (!pub.instagram) {
+    return setStatus(el.publishStatus, 'Configure as chaves do Instagram no .env (SETUP-INSTAGRAM.md) e reinicie.', 'error');
   }
   const cap = el.caption.value;
   const preview = cap.length > 300 ? cap.slice(0, 300) + '…\n\n[prévia cortada — a legenda completa será publicada]' : cap;
-  const ok = confirm(
-    `Publicar ${state.slides.length} slide${state.slides.length > 1 ? 's' : ''} no Instagram agora?\n\nLegenda:\n${preview}`
-  );
-  if (!ok) return;
+  if (!confirm(`Publicar ${state.slides.length} slide${state.slides.length > 1 ? 's' : ''} no Instagram agora?\n\nLegenda:\n${preview}`)) return;
 
   el.publishBtn.disabled = true;
   setStatus(el.publishStatus, 'Publicando... (renderiza, envia e aguarda o Instagram — pode levar ~1 min)');
@@ -331,25 +333,71 @@ el.publishBtn.addEventListener('click', async () => {
   }
 });
 
-// ------------------------------------------------------------ agenda / fila
+el.scheduleBtn.addEventListener('click', async () => {
+  if (!state.slides.length) return setStatus(el.publishStatus, 'Nenhum slide pra agendar.', 'error');
+  if (!el.scheduleAt.value) return setStatus(el.publishStatus, 'Escolha data e hora do agendamento.', 'error');
+  state.caption = el.caption.value;
+  await saveCarousel();
+  const res = await fetch('/api/queue', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ scheduledAt: new Date(el.scheduleAt.value).toISOString() }),
+  });
+  const data = await res.json();
+  if (!res.ok) return setStatus(el.publishStatus, data.error, 'error');
+  setStatus(el.publishStatus, `Agendado para ${fmtDate(data.scheduledAt)}. Veja na aba Agenda.`, 'ok');
+});
 
-function fmtDate(iso) {
-  if (!iso) return '';
-  const d = new Date(iso);
-  return d.toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+// ------------------------------------------------------------ planejador em lote
+
+let planPoller = null;
+function pollPlanStatus() {
+  clearInterval(planPoller);
+  planPoller = setInterval(async () => {
+    const s = await (await fetch('/api/plan/status')).json();
+    if (s.running) {
+      setStatus(el.planStatus, `Gerando ${s.done}/${s.total}... ${s.currentTitle ? `(${s.currentTitle})` : ''}`);
+    } else {
+      clearInterval(planPoller);
+      el.planBtn.disabled = false;
+      if (s.error) setStatus(el.planStatus, `Erro: ${s.error}`, 'error');
+      else if (s.total) setStatus(el.planStatus, `Pronto! ${s.total} posts agendados — veja na aba Agenda.`, 'ok');
+    }
+  }, 3000);
 }
 
-// converte ISO → valor aceito pelo input datetime-local (hora local)
-function isoToLocalInput(iso) {
-  const d = new Date(iso);
-  d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
-  return d.toISOString().slice(0, 16);
-}
+el.planBtn.addEventListener('click', async () => {
+  const rawText = el.rawText.value.trim();
+  if (!rawText) return setStatus(el.planStatus, 'Cole o texto de origem primeiro (caixa lá em cima).', 'error');
+  if (!el.planDate.value) return setStatus(el.planStatus, 'Escolha a data inicial.', 'error');
+  const count = Number(el.planCount.value) || 10;
+  if (!confirm(`Gerar e agendar ${count} posts, 1 por dia a partir de ${el.planDate.value} às ${el.planTime.value}?\n\nIsso faz ${count + 1} chamadas à IA e pode levar alguns minutos.`)) return;
 
-const STATUS_LABELS = { scheduled: 'agendado', published: 'publicado', error: 'erro' };
+  el.planBtn.disabled = true;
+  setStatus(el.planStatus, 'Planejando ângulos...');
+  const res = await fetch('/api/plan', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      rawText, count,
+      startDate: el.planDate.value,
+      time: el.planTime.value,
+      slideCount: Number(el.slideCount.value) || 8,
+      author: el.author.value.trim(),
+    }),
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    el.planBtn.disabled = false;
+    return setStatus(el.planStatus, data.error, 'error');
+  }
+  pollPlanStatus();
+});
+
+// ------------------------------------------------------------ agenda
 
 let queueCache = [];
-let queueView = 'list';
+let queueView = 'calendar';
 let calMonth = new Date();
 
 async function loadQueue() {
@@ -367,16 +415,20 @@ function renderQueueViews() {
   el.viewCalBtn.classList.toggle('active', queueView === 'calendar');
 }
 
+el.viewListBtn.addEventListener('click', () => { queueView = 'list'; renderQueueViews(); });
+el.viewCalBtn.addEventListener('click', () => { queueView = 'calendar'; renderQueueViews(); });
+el.calPrev.addEventListener('click', () => { calMonth.setMonth(calMonth.getMonth() - 1); renderCalendar(queueCache); });
+el.calNext.addEventListener('click', () => { calMonth.setMonth(calMonth.getMonth() + 1); renderCalendar(queueCache); });
+
 function renderCalendar(queue) {
   const y = calMonth.getFullYear();
   const m = calMonth.getMonth();
   el.calLabel.textContent = calMonth.toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' });
 
-  // agrupa posts por dia local (YYYY-MM-DD)
   const byDay = {};
   for (const item of queue) {
     const d = new Date(item.scheduledAt);
-    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    const key = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
     (byDay[key] = byDay[key] || []).push(item);
   }
 
@@ -390,7 +442,7 @@ function renderCalendar(queue) {
 
   const first = new Date(y, m, 1);
   const start = new Date(first);
-  start.setDate(1 - first.getDay()); // volta até o domingo
+  start.setDate(1 - first.getDay());
   const todayKey = new Date().toDateString();
 
   for (let i = 0; i < 42; i++) {
@@ -405,22 +457,14 @@ function renderCalendar(queue) {
     num.textContent = day.getDate();
     cell.appendChild(num);
 
-    const key = `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, '0')}-${String(day.getDate()).padStart(2, '0')}`;
+    const key = `${day.getFullYear()}-${day.getMonth()}-${day.getDate()}`;
     for (const item of byDay[key] || []) {
       const chip = document.createElement('div');
       chip.className = `cal-chip ${item.status}`;
       const hh = new Date(item.scheduledAt).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
       chip.textContent = `${hh} ${item.title}`;
-      chip.title = `${item.title}\n${STATUS_LABELS[item.status] || item.status}${item.error ? ` — ${item.error}` : ''}\nClique para abrir no editor`;
-      chip.addEventListener('click', async () => {
-        if (item.permalink && item.status === 'published') {
-          window.open(item.permalink, '_blank');
-          return;
-        }
-        await fetch(`/api/queue/${item.id}/load`, { method: 'POST' });
-        await loadCarousel();
-        window.scrollTo({ top: 0, behavior: 'smooth' });
-      });
+      chip.title = `${item.title} — clique para ver`;
+      chip.addEventListener('click', () => openItemModal(item));
       cell.appendChild(chip);
     }
     el.calGrid.appendChild(cell);
@@ -436,18 +480,13 @@ function renderQueueList(queue) {
   for (const item of queue) {
     const row = document.createElement('div');
     row.className = 'queue-item';
-    const statusHtml = item.permalink
-      ? `<a href="${item.permalink}" target="_blank" class="q-status ${item.status}">${STATUS_LABELS[item.status] || item.status}</a>`
-      : `<span class="q-status ${item.status}" title="${item.error || ''}">${STATUS_LABELS[item.status] || item.status}</span>`;
     row.innerHTML = `
-      <span class="q-title" title="${item.title}">${item.title}</span>
-      ${statusHtml}
+      <span class="q-title" style="cursor:pointer" title="clique para ver">${item.title}</span>
+      <span class="q-status ${item.status}" title="${item.error || ''}">${STATUS_LABELS[item.status] || item.status}</span>
       <input type="datetime-local" value="${isoToLocalInput(item.scheduledAt)}" ${item.status === 'published' ? 'disabled' : ''} />
-      <button class="icon-btn" data-action="edit" title="Carregar no editor">✎</button>
-      <button class="icon-btn" data-action="now" title="Publicar agora">▶</button>
       <button class="icon-btn danger" data-action="del" title="Remover">✕</button>
     `;
-
+    row.querySelector('.q-title').addEventListener('click', () => openItemModal(item));
     row.querySelector('input').addEventListener('change', async (e) => {
       await fetch(`/api/queue/${item.id}`, {
         method: 'PUT',
@@ -456,258 +495,304 @@ function renderQueueList(queue) {
       });
       loadQueue();
     });
-    row.querySelector('[data-action="edit"]').addEventListener('click', async () => {
-      await fetch(`/api/queue/${item.id}/load`, { method: 'POST' });
-      await loadCarousel();
-      window.scrollTo({ top: 0, behavior: 'smooth' });
-    });
-    row.querySelector('[data-action="now"]').addEventListener('click', async () => {
-      if (!confirm(`Publicar "${item.title}" no Instagram AGORA?`)) return;
-      row.querySelector('[data-action="now"]').disabled = true;
-      const res = await fetch(`/api/queue/${item.id}/publish-now`, { method: 'POST' });
-      const data = await res.json();
-      if (!res.ok) alert(`Erro: ${data.error}`);
-      loadQueue();
-    });
     row.querySelector('[data-action="del"]').addEventListener('click', async () => {
       if (item.status !== 'published' && !confirm(`Remover "${item.title}" da agenda?`)) return;
       await fetch(`/api/queue/${item.id}`, { method: 'DELETE' });
       loadQueue();
     });
-
     el.queueList.appendChild(row);
   }
 }
 
-el.viewListBtn.addEventListener('click', () => { queueView = 'list'; renderQueueViews(); });
-el.viewCalBtn.addEventListener('click', () => { queueView = 'calendar'; renderQueueViews(); });
-el.calPrev.addEventListener('click', () => { calMonth.setMonth(calMonth.getMonth() - 1); renderCalendar(queueCache); });
-el.calNext.addEventListener('click', () => { calMonth.setMonth(calMonth.getMonth() + 1); renderCalendar(queueCache); });
+// ------------------------------------------------------------ modal de preview
 
-el.scheduleBtn.addEventListener('click', async () => {
-  if (!state.slides.length) {
-    setStatus(el.publishStatus, 'Nenhum slide pra agendar.', 'error');
-    return;
+function closeModal() {
+  el.itemModal.hidden = true;
+  el.modalBody.innerHTML = '';
+  el.modalActions.innerHTML = '';
+  setStatus(el.modalStatus, '');
+}
+el.modalClose.addEventListener('click', closeModal);
+el.itemModal.addEventListener('click', (e) => { if (e.target === el.itemModal) closeModal(); });
+
+function openItemModal(item) {
+  el.itemModal.hidden = false;
+  el.modalTitle.textContent = item.title;
+  setStatus(el.modalStatus, '');
+
+  // corpo
+  if (item.kind === 'reel') {
+    const file = item.videoPath ? item.videoPath.split('/').pop() : '';
+    el.modalBody.innerHTML = `
+      <video controls playsinline src="/reels/${file}"></video>
+      <div class="modal-caption">${(item.caption || '(sem legenda)').replace(/</g, '&lt;')}</div>
+    `;
+  } else {
+    const slides = item.carousel?.slides || [];
+    el.modalBody.innerHTML = `
+      <div class="modal-slides">
+        ${slides.map((s, i) => `
+          <div class="modal-slide"><iframe src="/api/queue/${item.id}/slide/${i}" loading="lazy"></iframe></div>
+        `).join('')}
+      </div>
+      <div class="modal-caption">${(item.carousel?.caption || '(sem legenda)').replace(/</g, '&lt;')}</div>
+    `;
   }
-  if (!el.scheduleAt.value) {
-    setStatus(el.publishStatus, 'Escolha data e hora do agendamento.', 'error');
-    return;
+
+  // ações
+  el.modalActions.innerHTML = '';
+  const addBtn = (label, cls, fn) => {
+    const b = document.createElement('button');
+    b.textContent = label;
+    if (cls) b.className = cls;
+    b.addEventListener('click', fn);
+    el.modalActions.appendChild(b);
+    return b;
+  };
+
+  if (item.permalink) {
+    addBtn('Abrir no Instagram', 'secondary', () => window.open(item.permalink, '_blank'));
   }
-  state.caption = el.caption.value;
-  await saveCarousel();
-  const res = await fetch('/api/queue', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ scheduledAt: new Date(el.scheduleAt.value).toISOString() }),
-  });
-  const data = await res.json();
-  if (!res.ok) {
-    setStatus(el.publishStatus, data.error, 'error');
-    return;
-  }
-  setStatus(el.publishStatus, `Agendado para ${fmtDate(data.scheduledAt)}.`, 'ok');
-  loadQueue();
-});
-
-// ------------------------------------------------------------ planejador
-
-let planPoller = null;
-
-function pollPlanStatus() {
-  clearInterval(planPoller);
-  planPoller = setInterval(async () => {
-    const s = await (await fetch('/api/plan/status')).json();
-    if (s.running) {
-      setStatus(el.planStatus, `Gerando ${s.done}/${s.total}... ${s.currentTitle ? `(${s.currentTitle})` : ''}`);
+  if (item.status !== 'published') {
+    if (item.kind !== 'reel') {
+      addBtn('Abrir no editor', 'secondary', async () => {
+        await fetch(`/api/queue/${item.id}/load`, { method: 'POST' });
+        await loadCarousel();
+        closeModal();
+        switchTab('post');
+      });
+    }
+    addBtn('Publicar agora', '', async (e) => {
+      if (!confirm(`Publicar "${item.title}" no Instagram AGORA?`)) return;
+      e.target.disabled = true;
+      setStatus(el.modalStatus, 'Publicando...');
+      const res = await fetch(`/api/queue/${item.id}/publish-now`, { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) setStatus(el.modalStatus, data.error, 'error');
+      else {
+        el.modalStatus.innerHTML = data.permalink
+          ? `Publicado! <a href="${data.permalink}" target="_blank">${data.permalink}</a>` : 'Publicado!';
+        el.modalStatus.className = 'status ok';
+      }
       loadQueue();
-    } else {
-      clearInterval(planPoller);
-      el.planBtn.disabled = false;
-      if (s.error) setStatus(el.planStatus, `Erro: ${s.error}`, 'error');
-      else if (s.total) setStatus(el.planStatus, `Pronto! ${s.total} posts agendados.`, 'ok');
+    });
+    addBtn('Remover', 'icon-btn danger', async () => {
+      if (!confirm(`Remover "${item.title}" da agenda?`)) return;
+      await fetch(`/api/queue/${item.id}`, { method: 'DELETE' });
+      closeModal();
       loadQueue();
-    }
-  }, 3000);
+    });
+  }
 }
 
-el.planBtn.addEventListener('click', async () => {
-  const rawText = el.rawText.value.trim();
-  if (!rawText) {
-    setStatus(el.planStatus, 'Cole o texto de origem primeiro (caixa lá em cima).', 'error');
-    return;
-  }
-  if (!el.planDate.value) {
-    setStatus(el.planStatus, 'Escolha a data inicial.', 'error');
-    return;
-  }
-  const count = Number(el.planCount.value) || 10;
-  if (!confirm(`Gerar e agendar ${count} posts, 1 por dia a partir de ${el.planDate.value} às ${el.planTime.value}?\n\nIsso faz ${count + 1} chamadas à IA e pode levar alguns minutos.`)) return;
+// ------------------------------------------------------------ reels em lote
 
-  el.planBtn.disabled = true;
-  setStatus(el.planStatus, 'Planejando ângulos...');
-  const res = await fetch('/api/plan', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      rawText,
-      count,
-      startDate: el.planDate.value,
-      time: el.planTime.value,
-      slideCount: Number(el.slideCount.value) || 8,
-      author: el.author.value.trim(),
-    }),
-  });
-  const data = await res.json();
-  if (!res.ok) {
-    el.planBtn.disabled = false;
-    setStatus(el.planStatus, data.error, 'error');
-    return;
-  }
-  pollPlanStatus();
-});
-
-// ------------------------------------------------------------ reels
-
-const reel = { sourceFile: '', result: null };
-
-function pollReelStatus() {
-  const timer = setInterval(async () => {
-    const s = await (await fetch('/api/reels/status')).json();
-    if (s.running) {
-      setStatus(el.reelStatus, s.stage);
-      return;
-    }
-    clearInterval(timer);
-    if (s.error) {
-      setStatus(el.reelStatus, `Erro: ${s.error}`, 'error');
-      return;
-    }
-    if (s.result) {
-      reel.result = s.result;
-      const fmtLabel = s.result.format === 'vertical'
-        ? 'vertical (gancho nos primeiros segundos)'
-        : 'horizontal → tela 9:16 com faixas (gancho fixo em cima)';
-      setStatus(el.reelStatus, `Pronto! Formato: ${fmtLabel}.`, 'ok');
-      el.reelResult.hidden = false;
-      el.reelPreview.src = `/reels/${s.result.file}?t=${Date.now()}`;
-      el.reelHook.value = s.result.hook || '';
-      el.reelCaption.value = s.result.caption || '';
-    }
-  }, 3000);
-}
-
-async function startReelProcess(hookOverride) {
-  setStatus(el.reelStatus, 'Processando... (transcrição + IA + render — alguns minutos)');
-  el.reelResult.hidden = true;
-  const res = await fetch('/api/reels/process', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ file: reel.sourceFile, hookOverride: hookOverride || '' }),
-  });
-  const data = await res.json();
-  if (!res.ok) {
-    setStatus(el.reelStatus, data.error, 'error');
-    return;
-  }
-  pollReelStatus();
-}
+let reelBatchCache = [];
+let reelPoller = null;
+const reelDates = {}; // file -> datetime-local value
+const reelScheduled = new Set(); // arquivos já agendados nesta sessão
 
 el.reelDrop.addEventListener('click', () => el.reelInput.click());
 el.reelInput.addEventListener('change', async () => {
-  const file = el.reelInput.files[0];
-  if (!file) return;
-  setStatus(el.reelStatus, `Enviando ${file.name} (${(file.size / 1e6).toFixed(0)}MB)...`);
-  const formData = new FormData();
-  formData.append('video', file);
-  const res = await fetch('/api/reels/upload', { method: 'POST', body: formData });
-  const data = await res.json();
-  if (!res.ok) {
-    setStatus(el.reelStatus, data.error, 'error');
-    return;
-  }
-  reel.sourceFile = data.file;
-  startReelProcess();
-});
-
-el.reelReprocessBtn.addEventListener('click', () => {
-  if (!reel.sourceFile) return;
-  startReelProcess(el.reelHook.value.trim());
-});
-
-el.reelScheduleBtn.addEventListener('click', async () => {
-  if (!reel.result) return;
-  if (!el.reelScheduleAt.value) {
-    setStatus(el.reelPubStatus, 'Escolha data e hora.', 'error');
-    return;
-  }
-  const res = await fetch('/api/reels/schedule', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      file: reel.result.file,
-      caption: el.reelCaption.value,
-      title: el.reelHook.value || reel.result.hook,
-      scheduledAt: new Date(el.reelScheduleAt.value).toISOString(),
-    }),
-  });
-  const data = await res.json();
-  if (!res.ok) {
-    setStatus(el.reelPubStatus, data.error, 'error');
-    return;
-  }
-  setStatus(el.reelPubStatus, `Reel agendado para ${fmtDate(data.scheduledAt)}.`, 'ok');
-  loadQueue();
-});
-
-el.reelPublishBtn.addEventListener('click', async () => {
-  if (!reel.result) return;
-  if (!confirm('Publicar este Reel no Instagram AGORA?')) return;
-  el.reelPublishBtn.disabled = true;
-  setStatus(el.reelPubStatus, 'Publicando Reel... (o Instagram processa o vídeo — 1-3 min)');
-  try {
-    const res = await fetch('/api/reels/publish-now', {
+  const files = [...el.reelInput.files];
+  if (!files.length) return;
+  el.reelBatchControls.hidden = false;
+  for (const f of files) {
+    setStatus(el.reelBatchStatus, `Enviando ${f.name} (${(f.size / 1e6).toFixed(0)}MB)...`);
+    const formData = new FormData();
+    formData.append('video', f);
+    const res = await fetch('/api/reels/upload', { method: 'POST', body: formData });
+    const data = await res.json();
+    if (!res.ok) {
+      setStatus(el.reelBatchStatus, `${f.name}: ${data.error}`, 'error');
+      continue;
+    }
+    await fetch('/api/reels/process', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ file: reel.result.file, caption: el.reelCaption.value }),
+      body: JSON.stringify({ file: data.file, name: f.name }),
     });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'erro desconhecido');
-    el.reelPubStatus.innerHTML = data.permalink
-      ? `Publicado! <a href="${data.permalink}" target="_blank">${data.permalink}</a>`
-      : `Publicado! (id ${data.id})`;
-    el.reelPubStatus.className = 'status ok';
-  } catch (err) {
-    setStatus(el.reelPubStatus, err.message, 'error');
-  } finally {
-    el.reelPublishBtn.disabled = false;
   }
+  setStatus(el.reelBatchStatus, 'Vídeos na fila de processamento.', 'ok');
+  el.reelInput.value = '';
+  startReelPolling();
 });
+
+function startReelPolling() {
+  pollReelBatch();
+  clearInterval(reelPoller);
+  reelPoller = setInterval(pollReelBatch, 3000);
+}
+
+async function pollReelBatch() {
+  const res = await fetch('/api/reels/batch');
+  reelBatchCache = await res.json();
+  renderReelBatch();
+  if (!reelBatchCache.some((i) => i.status === 'queued' || i.status === 'processing')) {
+    clearInterval(reelPoller);
+    reelPoller = null;
+  }
+}
+
+function renderReelBatch() {
+  if (!reelBatchCache.length) {
+    el.reelBatchList.innerHTML = '';
+    return;
+  }
+  el.reelBatchControls.hidden = false;
+  el.reelBatchList.innerHTML = '';
+
+  for (const item of reelBatchCache) {
+    const div = document.createElement('div');
+    div.className = 'reel-item';
+    const done = item.status === 'done' && item.result;
+    const scheduled = reelScheduled.has(item.file);
+
+    div.innerHTML = `
+      ${done
+        ? `<video controls playsinline src="/reels/${item.result.file}"></video>`
+        : `<div class="placeholder">${item.status === 'error' ? '⚠️' : '⏳'}</div>`}
+      <div>
+        <div class="r-head">
+          <span class="r-name">${item.name}</span>
+          <span class="q-status ${item.status === 'done' ? (scheduled ? 'published' : 'scheduled') : item.status === 'error' ? 'error' : 'scheduled'}">
+            ${item.status === 'queued' ? 'na fila' : item.status === 'processing' ? 'processando' : item.status === 'error' ? 'erro' : scheduled ? 'agendado ✓' : 'pronto'}
+          </span>
+        </div>
+        ${item.status === 'processing' || item.status === 'queued' ? `<p class="hint">${item.stage || ''}</p>` : ''}
+        ${item.status === 'error' ? `<p class="status error">${item.error}</p>` : ''}
+        ${done ? `
+          <label>Gancho (edite e reprocesse se quiser)</label>
+          <div class="row">
+            <input type="text" data-f="hook" value="${(item.result.hook || '').replace(/"/g, '&quot;')}" style="flex:3" />
+            <button class="secondary inline" data-a="reproc" style="flex:1">Reprocessar</button>
+          </div>
+          <label>Legenda do post</label>
+          <textarea data-f="caption">${item.result.caption || ''}</textarea>
+          <div class="r-actions" style="margin-top:10px;">
+            <input type="datetime-local" data-f="date" value="${reelDates[item.file] || ''}" />
+            <button class="secondary" data-a="schedule" ${scheduled ? 'disabled' : ''}>Agendar</button>
+            <button data-a="publish">Publicar agora</button>
+            <button class="icon-btn danger" data-a="remove" title="Tirar da lista">✕</button>
+          </div>
+          <div class="status" data-f="status"></div>
+        ` : ''}
+      </div>
+    `;
+
+    if (done) {
+      const $ = (sel) => div.querySelector(sel);
+      $('[data-f="date"]').addEventListener('change', (e) => { reelDates[item.file] = e.target.value; });
+      $('[data-a="reproc"]').addEventListener('click', async () => {
+        await fetch('/api/reels/process', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ file: item.file, name: item.name, hookOverride: $('[data-f="hook"]').value.trim() }),
+        });
+        startReelPolling();
+      });
+      $('[data-a="schedule"]').addEventListener('click', async () => {
+        const dateVal = $('[data-f="date"]').value;
+        if (!dateVal) return setStatus($('[data-f="status"]'), 'Escolha a data.', 'error');
+        const res = await fetch('/api/reels/schedule', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            file: item.result.file,
+            caption: $('[data-f="caption"]').value,
+            title: $('[data-f="hook"]').value || item.result.hook,
+            scheduledAt: new Date(dateVal).toISOString(),
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) return setStatus($('[data-f="status"]'), data.error, 'error');
+        reelScheduled.add(item.file);
+        setStatus($('[data-f="status"]'), `Agendado para ${fmtDate(data.scheduledAt)}.`, 'ok');
+        renderReelBatch();
+      });
+      $('[data-a="publish"]').addEventListener('click', async (e) => {
+        if (!confirm(`Publicar "${item.name}" no Instagram AGORA?`)) return;
+        e.target.disabled = true;
+        setStatus($('[data-f="status"]'), 'Publicando... (1-3 min)');
+        const res = await fetch('/api/reels/publish-now', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ file: item.result.file, caption: $('[data-f="caption"]').value }),
+        });
+        const data = await res.json();
+        const st = $('[data-f="status"]');
+        if (!res.ok) { setStatus(st, data.error, 'error'); e.target.disabled = false; }
+        else {
+          st.innerHTML = data.permalink
+            ? `Publicado! <a href="${data.permalink}" target="_blank">${data.permalink}</a>` : 'Publicado!';
+          st.className = 'status ok';
+        }
+      });
+      $('[data-a="remove"]').addEventListener('click', async () => {
+        await fetch(`/api/reels/batch/${item.file}`, { method: 'DELETE' });
+        pollReelBatch();
+      });
+    }
+    el.reelBatchList.appendChild(div);
+  }
+}
+
+el.reelDistributeBtn.addEventListener('click', () => {
+  if (!el.reelStartDate.value) return setStatus(el.reelBatchStatus, 'Escolha a data inicial.', 'error');
+  let d = new Date(`${el.reelStartDate.value}T${el.reelStartTime.value || '18:00'}`);
+  for (const item of reelBatchCache) {
+    if (item.status !== 'done' || reelScheduled.has(item.file)) continue;
+    reelDates[item.file] = isoToLocalInput(d.toISOString());
+    d = new Date(d.getTime() + 24 * 3600 * 1000);
+  }
+  renderReelBatch();
+  setStatus(el.reelBatchStatus, 'Datas preenchidas — revise e clique em "Agendar todos os prontos".', 'ok');
+});
+
+el.reelScheduleAllBtn.addEventListener('click', async () => {
+  const ready = reelBatchCache.filter((i) => i.status === 'done' && !reelScheduled.has(i.file) && reelDates[i.file]);
+  if (!ready.length) return setStatus(el.reelBatchStatus, 'Nenhum reel pronto com data preenchida.', 'error');
+  if (!confirm(`Agendar ${ready.length} reel${ready.length > 1 ? 's' : ''}?`)) return;
+  let ok = 0;
+  for (const item of ready) {
+    const div = [...el.reelBatchList.children][reelBatchCache.indexOf(item)];
+    const caption = div?.querySelector('[data-f="caption"]')?.value ?? item.result.caption;
+    const hook = div?.querySelector('[data-f="hook"]')?.value ?? item.result.hook;
+    const res = await fetch('/api/reels/schedule', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        file: item.result.file, caption, title: hook,
+        scheduledAt: new Date(reelDates[item.file]).toISOString(),
+      }),
+    });
+    if (res.ok) { reelScheduled.add(item.file); ok++; }
+  }
+  renderReelBatch();
+  setStatus(el.reelBatchStatus, `${ok} reels agendados — veja na aba Agenda.`, 'ok');
+});
+
+// ------------------------------------------------------------ init
 
 (async function init() {
   await loadMeta();
   await loadCarousel();
   await loadQueue();
-  // retoma acompanhamento de um Reel em processamento ou mostra o último pronto
-  const rs = await (await fetch('/api/reels/status')).json();
-  if (rs.running) {
-    pollReelStatus();
-  } else if (rs.result) {
-    reel.sourceFile = rs.result.sourceFile;
-    reel.result = rs.result;
-    el.reelResult.hidden = false;
-    el.reelPreview.src = `/reels/${rs.result.file}`;
-    el.reelHook.value = rs.result.hook || '';
-    el.reelCaption.value = rs.result.caption || '';
-    setStatus(el.reelStatus, 'Último Reel processado carregado.', 'ok');
-  }
-  // defaults do planejador: amanhã, 18h
+
   const tomorrow = new Date(Date.now() + 24 * 3600 * 1000);
   el.planDate.value = tomorrow.toISOString().slice(0, 10);
+  el.reelStartDate.value = tomorrow.toISOString().slice(0, 10);
   el.scheduleAt.value = isoToLocalInput(tomorrow.toISOString()).slice(0, 11) + '18:00';
-  // retoma acompanhamento se um planejamento estiver rodando
-  const s = await (await fetch('/api/plan/status')).json();
-  if (s.running) {
+
+  const plan = await (await fetch('/api/plan/status')).json();
+  if (plan.running) {
     el.planBtn.disabled = true;
     pollPlanStatus();
+  }
+  const batch = await (await fetch('/api/reels/batch')).json();
+  if (batch.length) {
+    reelBatchCache = batch;
+    renderReelBatch();
+    if (batch.some((i) => i.status === 'queued' || i.status === 'processing')) startReelPolling();
   }
 })();

@@ -293,6 +293,24 @@ app.delete('/api/queue/:id', async (req, res) => {
   res.json({ ok: true });
 });
 
+// Renderiza um slide de um post AGENDADO (preview no modal da agenda)
+app.get('/api/queue/:id/slide/:index', async (req, res) => {
+  const queue = await readQueue();
+  const item = queue.find((p) => p.id === req.params.id);
+  if (!item || item.kind === 'reel') return res.status(404).send('não encontrado');
+  const i = Number(req.params.index);
+  const slide = item.carousel.slides[i];
+  if (!slide) return res.status(404).send('slide não encontrado');
+  res.send(
+    renderSlideHTML(slide, {
+      style: item.carousel.style,
+      index: i,
+      total: item.carousel.slides.length,
+      baseVariant: item.carousel.slides[0]?.variant,
+    })
+  );
+});
+
 // Copia o carrossel do post agendado para o editor
 app.post('/api/queue/:id/load', async (req, res) => {
   const queue = await readQueue();
@@ -324,75 +342,115 @@ app.post('/api/queue/:id/publish-now', async (req, res) => {
 
 // ------------------------------------------------------------ reels
 
-const reelJob = {
-  running: false, stage: '', error: '',
-  result: null, // { file, hook, caption, transcript, format }
-};
+// Fila de processamento: aceita vários vídeos, processa um por vez.
+// item: { file, name, status: queued|processing|done|error, stage, error, result }
+const reelBatch = [];
+let reelWorkerBusy = false;
 
-app.get('/api/reels/status', (req, res) => res.json(reelJob));
+async function processOneReel(item, hookOverride) {
+  const videoPath = path.join(REELS_DIR, item.file);
+  const id = path.basename(item.file, path.extname(item.file));
+  const workDir = path.join(REELS_DIR, `work-${id}`);
+  await mkdir(workDir, { recursive: true });
+
+  item.stage = 'analisando vídeo...';
+  const probe = await probeVideo(videoPath);
+  const format = await detectFormat(videoPath, probe);
+
+  item.stage = 'transcrevendo áudio (Whisper)...';
+  const words = await transcribeVideo(videoPath, workDir);
+  const blocks = buildBlocks(words);
+
+  item.stage = 'IA planejando gancho e destaques...';
+  const plan = await analyzeReel({ blocks });
+  const hook = (hookOverride || plan.hook || '').trim();
+
+  item.stage = 'renderizando legendas...';
+  const events = buildEvents(blocks, plan.highlights);
+  const pngDir = path.join(workDir, 'pngs');
+  const stripH = Math.round(format.canvas.width * 0.5);
+  await renderOverlayPNGs({ events, hook, width: format.canvas.width, stripH, outDir: pngDir });
+
+  item.stage = 'compondo vídeo final (ffmpeg)...';
+  const outFile = `${id}-final.mp4`;
+  await burnOverlays({
+    videoPath, events, hook, format, pngDir,
+    outPath: path.join(REELS_DIR, outFile), workDir,
+  });
+
+  return {
+    file: outFile,
+    sourceFile: item.file,
+    hook,
+    caption: plan.caption,
+    transcript: words.map((w) => w.t).join(' '),
+    format: format.type,
+    duration: probe.duration,
+  };
+}
+
+async function reelWorker() {
+  if (reelWorkerBusy) return;
+  reelWorkerBusy = true;
+  try {
+    let item;
+    while ((item = reelBatch.find((i) => i.status === 'queued'))) {
+      item.status = 'processing';
+      try {
+        item.result = await processOneReel(item, item.hookOverride);
+        item.status = 'done';
+        item.stage = '';
+      } catch (err) {
+        item.status = 'error';
+        item.error = err.message;
+        item.stage = '';
+      }
+    }
+  } finally {
+    reelWorkerBusy = false;
+  }
+}
+
+app.get('/api/reels/batch', (req, res) => res.json(reelBatch));
 
 app.post('/api/reels/upload', videoUpload.single('video'), (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'nenhum vídeo enviado' });
   res.json({ file: req.file.filename, size: req.file.size });
 });
 
-// Processa: transcreve, IA planeja (gancho/destaques/legenda), legenda e queima.
+// Enfileira o processamento (transcrição, IA, legenda, composição).
 app.post('/api/reels/process', async (req, res) => {
-  const { file, hookOverride } = req.body || {};
-  if (reelJob.running) return res.status(409).json({ error: 'já existe um processamento em andamento' });
+  const { file, hookOverride, name } = req.body || {};
   const videoPath = path.join(REELS_DIR, path.basename(file || ''));
   if (!file || !existsSync(videoPath)) return res.status(400).json({ error: 'vídeo não encontrado — envie primeiro' });
 
-  Object.assign(reelJob, { running: true, stage: 'analisando vídeo...', error: '', result: null });
+  const existing = reelBatch.find((i) => i.file === path.basename(file));
+  if (existing && existing.status === 'processing') {
+    return res.status(409).json({ error: 'esse vídeo já está sendo processado' });
+  }
+  if (existing) {
+    Object.assign(existing, {
+      status: 'queued', stage: 'na fila...', error: '', result: null,
+      hookOverride: (hookOverride || '').trim(),
+    });
+  } else {
+    reelBatch.push({
+      file: path.basename(file),
+      name: name || path.basename(file),
+      status: 'queued', stage: 'na fila...', error: '', result: null,
+      hookOverride: (hookOverride || '').trim(),
+    });
+  }
   res.json({ ok: true });
+  reelWorker();
+});
 
-  (async () => {
-    try {
-      const id = path.basename(file, path.extname(file));
-      const workDir = path.join(REELS_DIR, `work-${id}`);
-      await mkdir(workDir, { recursive: true });
-
-      const probe = await probeVideo(videoPath);
-      const format = await detectFormat(videoPath, probe);
-
-      reelJob.stage = 'transcrevendo áudio (Whisper)...';
-      const words = await transcribeVideo(videoPath, workDir);
-      const blocks = buildBlocks(words);
-
-      reelJob.stage = 'IA planejando gancho e destaques...';
-      const plan = await analyzeReel({ blocks });
-      const hook = (hookOverride || plan.hook || '').trim();
-
-      reelJob.stage = 'renderizando legendas...';
-      const events = buildEvents(blocks, plan.highlights);
-      const pngDir = path.join(workDir, 'pngs');
-      const stripH = Math.round(format.canvas.width * 0.5);
-      await renderOverlayPNGs({ events, hook, width: format.canvas.width, stripH, outDir: pngDir });
-
-      reelJob.stage = 'compondo vídeo final (ffmpeg)...';
-      const outFile = `${id}-final.mp4`;
-      await burnOverlays({
-        videoPath, events, hook, format, pngDir,
-        outPath: path.join(REELS_DIR, outFile), workDir,
-      });
-
-      reelJob.result = {
-        file: outFile,
-        sourceFile: path.basename(videoPath),
-        hook,
-        caption: plan.caption,
-        transcript: words.map((w) => w.t).join(' '),
-        format: format.type,
-        duration: probe.duration,
-      };
-      reelJob.stage = 'pronto';
-    } catch (err) {
-      reelJob.error = err.message;
-      reelJob.stage = '';
-    } finally {
-      reelJob.running = false;
-    }
-  })();
+app.delete('/api/reels/batch/:file', (req, res) => {
+  const idx = reelBatch.findIndex((i) => i.file === req.params.file);
+  if (idx === -1) return res.status(404).json({ error: 'item não encontrado' });
+  if (reelBatch[idx].status === 'processing') return res.status(409).json({ error: 'em processamento' });
+  reelBatch.splice(idx, 1);
+  res.json({ ok: true });
 });
 
 app.post('/api/reels/schedule', async (req, res) => {
