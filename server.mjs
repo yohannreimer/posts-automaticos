@@ -22,6 +22,7 @@ import { recoverInterruptedPublications, runDuePublications } from './lib/schedu
 import {
   syncMedia, linkQueueMetadata, snapshotAll, getSummary, getStatus as getAnalyticsStatus,
   saveClassification, getUnclassified, getTimelines, getOverview, getLearnings,
+  getReelsNeedingHook, fetchMediaUrl, saveHook, THUMBS_DIR,
   getAccountTimeline, getScoreConfig, saveScoreConfig, getLearningState, setLearningEnabled,
   getWeeklyPeriod, saveWeeklyReport, getWeeklyReports, getLatestWeeklyReport,
   checkAlerts, getAlerts, markAlertsSeen, fetchRecentComments, kvGetPublic, kvSetPublic,
@@ -39,7 +40,7 @@ function safeLearnings() {
 }
 import {
   probeVideo, detectFormat, transcribeVideo, buildBlocks, buildEvents,
-  renderOverlayPNGs, burnOverlays,
+  renderOverlayPNGs, burnOverlays, transcribeHook,
 } from './lib/captions.mjs';
 import { renderSlideHTML, CANVAS } from './templates/render.mjs';
 import { STYLES, ROLES, VARIANTS, isValidStyle, migrateLegacySlide } from './templates/registry.mjs';
@@ -89,6 +90,7 @@ const videoUpload = multer({
   limits: { fileSize: 500 * 1024 * 1024 },
 });
 app.use('/reels', express.static(REELS_DIR));
+app.use('/thumbs', express.static(THUMBS_DIR));
 
 const EMPTY_CAROUSEL = { style: 'grid', contentFormat: '', caption: '', slides: [] };
 
@@ -759,6 +761,59 @@ app.post('/api/insights/classify', async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+// Enriquecimento completo dos posts antigos: transcreve o gancho falado dos
+// reels sem texto (Whisper) e depois classifica tudo (tema/hook/CTA via IA).
+const enrichJob = { running: false, stage: '', done: 0, total: 0, error: '' };
+app.get('/api/insights/enrich/status', (req, res) => res.json(enrichJob));
+
+app.post('/api/insights/enrich', (req, res) => {
+  if (enrichJob.running) return res.status(409).json({ error: 'enriquecimento já em andamento' });
+  Object.assign(enrichJob, { running: true, stage: 'listando reels sem texto...', done: 0, total: 0, error: '' });
+  res.json({ ok: true });
+
+  (async () => {
+    try {
+      const ids = getReelsNeedingHook(30);
+      enrichJob.total = ids.length;
+      const workDir = path.join(__dirname, 'data', 'reels', 'work-hooks');
+      for (const igId of ids) {
+        enrichJob.stage = `transcrevendo gancho ${enrichJob.done + 1}/${ids.length} (Whisper)...`;
+        try {
+          const mediaUrl = await fetchMediaUrl(igId);
+          if (mediaUrl) {
+            const hook = await withAwake(() => transcribeHook(mediaUrl, workDir));
+            if (hook) saveHook(igId, hook);
+          }
+        } catch (err) {
+          console.log(`[analytics] gancho de ${igId} falhou: ${err.message}`);
+        }
+        enrichJob.done++;
+      }
+
+      enrichJob.stage = 'classificando tema/hook/CTA (IA)...';
+      for (let round = 0; round < 5; round++) {
+        const pending = getUnclassified(20);
+        if (!pending.length) break;
+        const items = await classifyPosts(pending);
+        for (const item of items) {
+          const post = pending[item.index];
+          if (!post) continue;
+          saveClassification(post.ig_id, {
+            theme: item.theme || '', hook_type: item.hook_type || '',
+            cta: item.cta || '', keywords: item.keywords || [],
+          });
+        }
+      }
+      enrichJob.stage = 'pronto';
+    } catch (err) {
+      enrichJob.error = err.message;
+      enrichJob.stage = '';
+    } finally {
+      enrichJob.running = false;
+    }
+  })();
 });
 
 app.get('/api/insights/timelines', (req, res) => {

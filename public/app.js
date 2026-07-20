@@ -1129,35 +1129,134 @@ function renderInsights() {
   });
 
   if (!rows.length) {
-    el.insightsBody.innerHTML = '<tr><td colspan="13" class="hint">Nenhum dado — sincronize primeiro.</td></tr>';
+    el.insightsBody.innerHTML = '<tr><td colspan="9" class="hint">Nenhum dado — sincronize primeiro.</td></tr>';
     return;
   }
 
-  const fmt = (n) => (n == null ? '—' : n >= 1000 ? (n / 1000).toFixed(1).replace('.0', '') + 'k' : String(n));
-  const pct = (n) => (n == null ? '—' : n.toFixed(2) + '%');
+  // zeros viram cinza discreto; nulos viram "—" — só o sinal fica visível
+  const fmt = (n) => (n == null ? '<span class="nil">—</span>' : n === 0 ? '<span class="zero">0</span>'
+    : n >= 1000 ? (n / 1000).toFixed(1).replace('.0', '') + 'k' : String(n));
+  const pct = (n) => (n == null || n === 0 ? '<span class="nil">—</span>' : n.toFixed(2).replace(/\.?0+$/, '') + '%');
   const bestSave = Math.max(...rows.map((r) => r.rates.saveRate ?? 0));
 
-  el.insightsBody.innerHTML = rows.map((r, i) => {
-    const label = (r.hook || r.caption || '(sem texto)').replace(/</g, '&lt;').slice(0, 70);
-    const tipo = r.productType === 'REELS' ? '🎬 Reel' : r.mediaType === 'CAROUSEL_ALBUM' ? '🖼 Carrossel' : '📷 Imagem';
+  el.insightsBody.innerHTML = '';
+  rows.forEach((r, i) => {
+    const label = (r.hook || r.caption || `Reel de ${r.postedAt ? new Date(r.postedAt).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' }) : '?'}`)
+      .replace(/</g, '&lt;').slice(0, 60);
+    const tipoIcon = r.productType === 'REELS' ? '🎬' : r.mediaType === 'CAROUSEL_ALBUM' ? '🖼' : '📷';
     const srcTag = r.source === 'app' ? '<span class="tag app">app</span>' : '';
     const themeTag = r.theme ? `<span class="tag">${r.theme.replace(/</g, '&lt;')}</span>` : '';
-    return `<tr class="${i < 3 && sortKey !== 'postedAt' ? 'top-row' : ''}">
-      <td class="post-cell">${srcTag}${themeTag}<a href="${r.permalink}" target="_blank" title="${label}">${label}</a></td>
+    const thumb = r.thumb
+      ? `<img class="row-thumb" src="${r.thumb}" loading="lazy" alt="" />`
+      : `<span class="row-thumb ph">${tipoIcon}</span>`;
+    const delta = timelineDelta(r.igId);
+    const scoreClass = r.score == null ? '' : r.score >= 60 ? 'score-hi' : r.score >= 30 ? 'score-mid' : 'score-low';
+
+    const tr = document.createElement('tr');
+    tr.className = `clickable ${i < 3 && sortKey !== 'postedAt' ? 'top-row' : ''}`;
+    tr.innerHTML = `
+      <td class="post-cell">
+        <div class="post-flex">
+          ${thumb}
+          <div class="post-text">
+            <span class="post-title" title="${label}">${tipoIcon} ${label}</span>
+            <span class="post-tags">${srcTag}${themeTag}</span>
+          </div>
+        </div>
+      </td>
       <td>${r.postedAt ? new Date(r.postedAt).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' }) : '—'}</td>
-      <td>${tipo}</td>
-      <td>${sparklineSVG(r.igId)}</td>
-      <td class="score-cell">${r.score == null ? '—' : `<span class="score-pill confidence-${r.scoreConfidence}">${r.score}</span><small>${r.scoreConfidenceLabel}</small>`}</td>
+      <td>${sparklineSVG(r.igId)}${delta ? `<small class="delta">${delta}</small>` : ''}</td>
+      <td class="score-cell">${r.score == null ? '<span class="nil">—</span>'
+        : `<span class="score-pill ${scoreClass}" title="Score 0–100 ponderado pelo objetivo escolhido (${r.scoreConfidenceLabel || ''})">${r.score}</span>`}</td>
       <td>${fmt(r.metrics.views)}</td>
       <td>${fmt(r.metrics.reach)}</td>
-      <td>${fmt(r.metrics.likes)}</td>
-      <td>${fmt(r.metrics.comments)}</td>
-      <td>${fmt(r.metrics.shares)}</td>
-      <td>${fmt(r.metrics.saves)}</td>
+      <td title="curtidas + comentários + shares + saves">${fmt(r.metrics.interactions)}</td>
       <td class="${r.rates.saveRate && r.rates.saveRate === bestSave ? 'best' : ''}">${pct(r.rates.saveRate)}</td>
       <td>${pct(r.rates.engagementRate)}</td>
-    </tr>`;
-  }).join('');
+    `;
+    tr.addEventListener('click', () => openInsightModal(r));
+    el.insightsBody.appendChild(tr);
+  });
+}
+
+// variação de views nos últimos 7 dias (a partir dos nossos snapshots)
+function timelineDelta(igId) {
+  const points = (timelinesCache[igId] || []).filter((p) => p.views != null);
+  if (points.length < 2) return '';
+  const cutoff = new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString();
+  const window = points.filter((p) => p.t >= cutoff);
+  if (window.length < 2) return '';
+  const diff = window[window.length - 1].views - window[0].views;
+  return diff > 0 ? `+${diff} (7d)` : '';
+}
+
+// Modal de detalhe de um post da análise
+function openInsightModal(r) {
+  el.itemModal.hidden = false;
+  const title = (r.hook || r.caption || 'Post').slice(0, 80);
+  el.modalTitle.textContent = title;
+  setStatus(el.modalStatus, '');
+
+  const m = r.metrics, t = r.rates;
+  const fmtV = (n, suffix = '') => (n == null ? '—' : `${n}${suffix}`);
+  const cells = [
+    ['Views', fmtV(m.views)], ['Alcance', fmtV(m.reach)],
+    ['Curtidas', fmtV(m.likes)], ['Comentários', fmtV(m.comments)],
+    ['Shares', fmtV(m.shares)], ['Saves', fmtV(m.saves)],
+    ['Seguidores', fmtV(m.follows)],
+    ['Tempo médio', m.avgWatchTime != null ? `${m.avgWatchTime.toFixed(1)}s` : '—'],
+    ['Save rate', t.saveRate != null ? t.saveRate + '%' : '—'],
+    ['Share rate', t.shareRate != null ? t.shareRate + '%' : '—'],
+    ['Engajamento', t.engagementRate != null ? t.engagementRate + '%' : '—'],
+    ['Conv. seguidores', t.followRate != null ? t.followRate + '%' : '—'],
+  ];
+
+  // curva grande de views
+  const points = (timelinesCache[r.igId] || []).filter((p) => p.views != null);
+  let chart = '<p class="hint">Ainda sem série temporal — os snapshots acumulam a cada 6h.</p>';
+  if (points.length >= 2) {
+    const w = 520, h = 120;
+    const max = Math.max(...points.map((p) => p.views), 1);
+    const min = Math.min(...points.map((p) => p.views));
+    const range = Math.max(max - min, 1);
+    const coords = points.map((p, i) =>
+      `${(i / (points.length - 1)) * w},${h - 6 - ((p.views - min) / range) * (h - 12)}`).join(' ');
+    chart = `<svg width="100%" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" style="background:#0c0c0e;border:1px solid var(--border);border-radius:8px;">
+      <polyline points="${coords}" fill="none" stroke="#63d68a" stroke-width="2"/>
+    </svg>
+    <p class="hint" style="text-align:right;">${points[0].views} → ${points[points.length - 1].views} views ${timelineDelta(r.igId) ? `(${timelineDelta(r.igId)})` : ''}</p>`;
+  }
+
+  const tags = [
+    r.source === 'app' ? '<span class="tag app">publicado pelo app</span>' : '',
+    r.theme ? `<span class="tag">${r.theme.replace(/</g, '&lt;')}</span>` : '',
+    r.contentFormat ? `<span class="tag">hook: ${r.contentFormat.replace(/</g, '&lt;')}</span>` : '',
+    r.style ? `<span class="tag">${r.style}</span>` : '',
+  ].join(' ');
+
+  el.modalBody.innerHTML = `
+    <div class="insight-detail">
+      ${r.thumb ? `<img class="detail-thumb" src="${r.thumb}" alt="" />` : ''}
+      <div class="detail-main">
+        <p class="hint" style="margin-top:0;">${r.productType === 'REELS' ? '🎬 Reel' : '🖼 Post de feed'} ·
+          ${r.postedAt ? new Date(r.postedAt).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : ''}
+          ${r.score != null ? ` · score <strong>${r.score}</strong>` : ''}</p>
+        <div class="detail-tags">${tags}</div>
+        <div class="detail-grid">
+          ${cells.map(([l, v]) => `<div class="d-cell"><div class="d-v">${v}</div><div class="d-l">${l}</div></div>`).join('')}
+        </div>
+      </div>
+    </div>
+    ${chart}
+    ${r.caption ? `<div class="modal-caption">${r.caption.replace(/</g, '&lt;')}</div>` : ''}
+  `;
+
+  el.modalActions.innerHTML = '';
+  const open = document.createElement('button');
+  open.textContent = 'Abrir no Instagram';
+  open.className = 'secondary';
+  open.addEventListener('click', () => window.open(r.permalink, '_blank'));
+  el.modalActions.appendChild(open);
 }
 
 el.scoreMode.addEventListener('change', () => {
@@ -1280,17 +1379,25 @@ el.insightsSyncBtn.addEventListener('click', async () => {
 
 el.insightsClassifyBtn.addEventListener('click', async () => {
   el.insightsClassifyBtn.disabled = true;
-  setStatus(el.insightsStatus, 'IA classificando posts antigos (tema, tipo de hook, CTA)...');
+  setStatus(el.insightsStatus, 'Enriquecendo posts antigos (transcrição de ganchos + classificação)...');
   try {
-    const res = await fetch('/api/insights/classify', { method: 'POST' });
+    const res = await fetch('/api/insights/enrich', { method: 'POST' });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error);
-    setStatus(el.insightsStatus,
-      `${data.classified} posts classificados${data.remaining ? ' — clique de novo pra continuar o restante' : '. Todos classificados!'}`, 'ok');
-    loadInsights();
+    const poll = setInterval(async () => {
+      const s = await (await fetch('/api/insights/enrich/status')).json();
+      if (s.running) {
+        setStatus(el.insightsStatus, s.stage + (s.total ? ` [${s.done}/${s.total}]` : ''));
+        return;
+      }
+      clearInterval(poll);
+      el.insightsClassifyBtn.disabled = false;
+      if (s.error) setStatus(el.insightsStatus, `Erro: ${s.error}`, 'error');
+      else setStatus(el.insightsStatus, 'Posts enriquecidos — ganchos transcritos e classificados!', 'ok');
+      loadInsights();
+    }, 3000);
   } catch (err) {
     setStatus(el.insightsStatus, err.message, 'error');
-  } finally {
     el.insightsClassifyBtn.disabled = false;
   }
 });

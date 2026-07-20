@@ -93,6 +93,33 @@ h1 { font-size: 20px; margin: 0 0 4px; }
 .insights-table .tag.app { background: #1e3a28; color: #63d68a; }
 .insights-table tr.top-row td { background: rgba(217, 74, 56, .07); }
 .insights-table .best { color: #63d68a; font-weight: 700; }
+.insights-table tr.clickable { cursor: pointer; }
+.insights-table tr.clickable:hover td { background: rgba(255,255,255,.03); }
+.insights-table .nil, .insights-table .zero { color: #4a4a52; }
+.insights-table .delta { display: block; color: #63d68a; font-size: 10px; }
+
+.row-thumb {
+  width: 40px; height: 50px; object-fit: cover; border-radius: 6px; flex-shrink: 0;
+  background: #0c0c0e; border: 1px solid var(--border);
+}
+.row-thumb.ph { display: flex; align-items: center; justify-content: center; font-size: 16px; }
+.post-flex { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.post-text { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.post-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.post-tags { display: flex; gap: 4px; }
+
+.score-pill.score-hi { background: #1e3a28; color: #63d68a; }
+.score-pill.score-mid { background: #3a331e; color: #e0c063; }
+.score-pill.score-low { background: #26262c; color: var(--muted); }
+
+.insight-detail { display: flex; gap: 16px; align-items: flex-start; margin-bottom: 14px; }
+.detail-thumb { width: 110px; border-radius: 10px; border: 1px solid var(--border); }
+.detail-main { flex: 1; min-width: 0; }
+.detail-tags { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
+.detail-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 8px; }
+.d-cell { background: #0c0c0e; border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; }
+.d-cell .d-v { font-size: 15px; font-weight: 700; }
+.d-cell .d-l { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; margin-top: 2px; }
 .insights-table .score-cell { font-weight: 700; }
 .insights-table .score-cell small { display: block; color: var(--muted); font-size: 9px; font-weight: 500; margin-top: 2px; }
 .score-pill { display: inline-flex; min-width: 30px; justify-content: center; padding: 3px 7px; border-radius: 999px; background: #23324a; color: #b9d3ff; }
