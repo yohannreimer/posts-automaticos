@@ -167,6 +167,8 @@
 
   <!-- ============================== ANÁLISE ============================== -->
   <section id="tab-insights" class="tab-page">
+    <div id="alertsBanner" hidden></div>
+
     <div class="panel">
       <div class="queue-header">
         <label>Métricas dos posts publicados</label>
@@ -177,13 +179,25 @@
       </div>
       <div class="status" id="insightsStatus"></div>
       <p class="hint" id="insightsMeta"></p>
+      <div class="overview-cards" id="overviewCards"></div>
+      <div class="timeline-block">
+        <div class="timeline-head">
+          <div>
+            <strong>Evolução acumulada</strong>
+            <span class="hint">snapshots salvos pelo app</span>
+          </div>
+          <div class="timeline-legend"><span class="views"></span> Views <span class="reach"></span> Alcance</div>
+        </div>
+        <div id="accountTimelineChart" class="account-timeline"><span class="hint">Aguardando mais snapshots...</span></div>
+      </div>
     </div>
 
     <div class="panel" style="margin-top:16px;">
       <div class="row" style="align-items:center; margin-bottom:12px;">
         <label style="margin:0;">Ordenar por</label>
         <select id="insightsSort" style="width:auto;">
-          <option value="postedAt">Mais recente</option>
+          <option value="score">Score geral</option>
+          <option value="postedAt" selected>Mais recente</option>
           <option value="views">Views</option>
           <option value="reach">Alcance</option>
           <option value="saveRate">Save rate</option>
@@ -196,16 +210,73 @@
           <option value="REELS">Só Reels</option>
           <option value="FEED">Só feed (carrossel/imagem)</option>
         </select>
+        <select id="scoreMode" style="width:auto;" title="Pesos do score geral">
+          <option value="balanced">Objetivo: equilíbrio</option>
+          <option value="growth">Objetivo: crescer seguidores</option>
+          <option value="authority">Objetivo: autoridade (saves/shares)</option>
+          <option value="custom">Objetivo: personalizado</option>
+        </select>
       </div>
+      <details class="score-settings">
+        <summary>Configurar pesos do score</summary>
+        <p class="hint">Métricas indisponíveis são ignoradas. Posts abaixo da amostra confiável recebem score com confiança reduzida.</p>
+        <div class="score-fields">
+          <label>Saves<input id="scoreWeightSave" type="number" min="0" max="10" step="0.5"></label>
+          <label>Shares<input id="scoreWeightShare" type="number" min="0" max="10" step="0.5"></label>
+          <label>Engajamento<input id="scoreWeightEngagement" type="number" min="0" max="10" step="0.5"></label>
+          <label>Novos seguidores<input id="scoreWeightFollow" type="number" min="0" max="10" step="0.5"></label>
+          <label>Views<input id="scoreWeightViews" type="number" min="0" max="10" step="0.5"></label>
+          <label>Alcance confiável a partir de<input id="scoreMinReach" type="number" min="10" max="10000" step="10"></label>
+        </div>
+        <div class="score-actions">
+          <button class="secondary" id="scoreSaveBtn" style="width:auto;">Salvar configuração</button>
+          <div class="status" id="scoreStatus"></div>
+        </div>
+      </details>
       <div class="insights-table-wrap">
         <table class="insights-table" id="insightsTable">
           <thead><tr>
-            <th>Post</th><th>Data</th><th>Tipo</th><th>Views</th><th>Alcance</th>
-            <th>❤️</th><th>💬</th><th>🔁</th><th>🔖</th><th>Save%</th><th>Share%</th><th>Eng%</th>
+            <th>Post</th><th>Data</th><th>Tipo</th><th>Evolução</th><th>Score</th><th>Views</th><th>Alcance</th>
+            <th>❤️</th><th>💬</th><th>🔁</th><th>🔖</th><th>Save%</th><th>Eng%</th>
           </tr></thead>
-          <tbody id="insightsBody"><tr><td colspan="12" class="hint">Sincronize pra carregar os dados.</td></tr></tbody>
+          <tbody id="insightsBody"><tr><td colspan="13" class="hint">Sincronize pra carregar os dados.</td></tr></tbody>
         </table>
       </div>
+    </div>
+
+    <div class="panel" style="margin-top:16px;">
+      <div class="queue-header">
+        <label>Relatórios semanais da IA</label>
+        <div class="report-actions">
+          <select id="reportHistory" style="width:auto;"><option value="">Nenhum relatório</option></select>
+          <button class="secondary" id="reportBtn" style="width:auto;">Gerar semana atual</button>
+        </div>
+      </div>
+      <p class="hint">Toda segunda-feira o app fecha a semana anterior. Gerar novamente uma semana atualiza aquele relatório sem apagar o histórico.</p>
+      <div class="status" id="reportStatus"></div>
+      <div class="report-box" id="reportBox" hidden></div>
+    </div>
+
+    <div class="panel" style="margin-top:16px;">
+      <div class="queue-header">
+        <div>
+          <label>Aprendizado usado pelo gerador</label>
+          <p class="hint">Somente padrões determinísticos de posts com alcance confiável — o texto livre do relatório não entra automaticamente.</p>
+        </div>
+        <label class="learning-toggle"><input id="learningEnabled" type="checkbox"> Usar aprendizados</label>
+      </div>
+      <div class="status" id="learningStatus"></div>
+      <pre id="learningPreview" class="learning-preview"></pre>
+    </div>
+
+    <div class="panel" style="margin-top:16px;">
+      <div class="queue-header">
+        <label>Ideias a partir dos comentários</label>
+        <button class="secondary" id="mineBtn" style="width:auto;">Minerar comentários</button>
+      </div>
+      <p class="hint">A IA lê os comentários dos teus posts recentes e extrai o que a audiência está pedindo.</p>
+      <div class="status" id="mineStatus"></div>
+      <div id="ideasList"></div>
     </div>
   </section>
 

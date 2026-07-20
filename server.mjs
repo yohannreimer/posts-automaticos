@@ -21,9 +21,22 @@ import { createAwakeGuard } from './lib/mac-awake.mjs';
 import { recoverInterruptedPublications, runDuePublications } from './lib/scheduler.mjs';
 import {
   syncMedia, linkQueueMetadata, snapshotAll, getSummary, getStatus as getAnalyticsStatus,
-  saveClassification, getUnclassified,
+  saveClassification, getUnclassified, getTimelines, getOverview, getLearnings,
+  getAccountTimeline, getScoreConfig, saveScoreConfig, getLearningState, setLearningEnabled,
+  getWeeklyPeriod, saveWeeklyReport, getWeeklyReports, getLatestWeeklyReport,
+  checkAlerts, getAlerts, markAlertsSeen, fetchRecentComments, kvGetPublic, kvSetPublic,
 } from './lib/analytics.mjs';
-import { classifyPosts } from './lib/claude.mjs';
+import { classifyPosts, generateInsightsReport, mineComments } from './lib/claude.mjs';
+
+// Aprendizados da conta (dados reais) injetados na geração de conteúdo.
+// Nunca pode derrubar uma geração — na dúvida, gera sem eles.
+function safeLearnings() {
+  try {
+    return getLearnings();
+  } catch {
+    return '';
+  }
+}
 import {
   probeVideo, detectFormat, transcribeVideo, buildBlocks, buildEvents,
   renderOverlayPNGs, burnOverlays,
@@ -153,6 +166,7 @@ app.post('/api/generate', async (req, res) => {
       slideCount: slideCount || 8,
       author: author || '',
       topic: topic || '',
+      learnings: safeLearnings(),
     });
     await writeCarousel(carousel);
     res.json(carousel);
@@ -390,7 +404,7 @@ async function processOneReel(item, hookOverride) {
   const blocks = buildBlocks(words);
 
   await setReelState(item, { stage: 'IA planejando gancho e destaques...' });
-  const plan = await analyzeReel({ blocks });
+  const plan = await analyzeReel({ blocks, learnings: safeLearnings() });
   const hook = (hookOverride || plan.hook || '').trim();
 
   await setReelState(item, { stage: 'renderizando legendas...' });
@@ -563,7 +577,8 @@ app.post('/api/plan', async (req, res) => {
   // roda em background; o front acompanha via /api/plan/status
   (async () => {
     try {
-      const angles = await generateAngles({ rawText, count: n });
+      const learnings = safeLearnings();
+      const angles = await generateAngles({ rawText, count: n, learnings });
       planJob.total = angles.length;
       for (let i = 0; i < angles.length; i++) {
         const angle = angles[i];
@@ -573,6 +588,7 @@ app.post('/api/plan', async (req, res) => {
           slideCount: Math.min(Number(slideCount) || 8, 10),
           author: author || '',
           topic: `${angle.title} — ${angle.focus}`,
+          learnings,
         });
         const when = new Date(`${startDate}T${time || '18:00'}:00`);
         when.setDate(when.getDate() + i);
@@ -594,6 +610,72 @@ app.post('/api/plan', async (req, res) => {
 // ------------------------------------------------------------ analytics
 
 const analyticsJob = { running: false, stage: '', error: '', lastResult: null };
+const reportJob = { running: false, error: '', lastGeneratedAt: '' };
+
+function summarizePosts(rows) {
+  const sum = (metric) => rows.reduce((total, row) => total + (row.metrics?.[metric] || 0), 0);
+  const reach = sum('reach');
+  const interactions = rows.reduce((total, row) => total + (row.metrics?.interactions || 0), 0);
+  return {
+    posts: rows.length,
+    views: sum('views'),
+    reach,
+    saves: sum('saves'),
+    shares: sum('shares'),
+    interactions,
+    engagementRate: reach ? Math.round((interactions / reach) * 10000) / 100 : null,
+  };
+}
+
+function weeklyReportData(reference = new Date()) {
+  const period = getWeeklyPeriod(reference);
+  const previousReference = new Date(new Date(period.periodStart).getTime() - 1);
+  const previousPeriod = getWeeklyPeriod(previousReference);
+  const summary = getSummary();
+  const inside = (row, selectedPeriod) => {
+    const timestamp = new Date(row.postedAt).getTime();
+    return timestamp >= new Date(selectedPeriod.periodStart).getTime() &&
+      timestamp < new Date(selectedPeriod.periodEnd).getTime();
+  };
+  const current = summary.filter((row) => inside(row, period));
+  const previous = summary.filter((row) => inside(row, previousPeriod));
+  return {
+    period,
+    summary: current,
+    overview: {
+      account: getOverview(),
+      current: summarizePosts(current),
+      previous: summarizePosts(previous),
+    },
+  };
+}
+
+async function createWeeklyReport(reference = new Date()) {
+  if (reportJob.running) {
+    const error = new Error('já existe um relatório em geração');
+    error.code = 'REPORT_RUNNING';
+    throw error;
+  }
+  reportJob.running = true;
+  reportJob.error = '';
+  try {
+    const data = weeklyReportData(reference);
+    const markdown = await generateInsightsReport(data);
+    const payload = saveWeeklyReport({
+      ...data.period,
+      generatedAt: new Date().toISOString(),
+      markdown,
+      data: data.overview,
+    });
+    reportJob.lastGeneratedAt = payload?.generatedAt || new Date().toISOString();
+    return payload;
+  } catch (err) {
+    reportJob.error = err.message;
+    throw err;
+  } finally {
+    reportJob.running = false;
+  }
+}
 
 async function runAnalyticsCollection() {
   if (analyticsJob.running) return;
@@ -609,6 +691,28 @@ async function runAnalyticsCollection() {
     const snap = await snapshotAll({ log: console.log });
     analyticsJob.lastResult = { media: count, linked, ...snap, at: new Date().toISOString() };
     console.log(`[analytics] sync: ${count} posts, ${linked} vinculados, ${snap.done} snapshots (${snap.failed} falhas)`);
+
+    // alertas de decolagem
+    const alerts = checkAlerts();
+    for (const a of alerts) console.log(`[analytics] ${a}`);
+
+    // Relatório da semana encerrada, toda segunda. Uma falha da IA não invalida
+    // a coleta de métricas que acabou de terminar com sucesso.
+    const now = new Date();
+    if (now.getDay() === 1) {
+      const previousWeekReference = new Date(now.getTime() - 24 * 3600 * 1000);
+      const { weekKey } = getWeeklyPeriod(previousWeekReference);
+      const alreadyGenerated = getWeeklyReports(52).some((report) => report.weekKey === weekKey);
+      if (!alreadyGenerated) {
+        try {
+          analyticsJob.stage = 'gerando relatório semanal (IA)...';
+          await createWeeklyReport(previousWeekReference);
+          console.log('[analytics] relatório semanal gerado');
+        } catch (reportError) {
+          console.error('[analytics] relatório semanal falhou:', reportError.message);
+        }
+      }
+    }
   } catch (err) {
     analyticsJob.error = err.message;
     console.error('[analytics] erro:', err.message);
@@ -619,7 +723,7 @@ async function runAnalyticsCollection() {
 }
 
 app.get('/api/insights/status', (req, res) => {
-  res.json({ ...getAnalyticsStatus(), job: analyticsJob });
+  res.json({ ...getAnalyticsStatus(), job: analyticsJob, reportJob });
 });
 
 app.get('/api/insights/summary', (req, res) => {
@@ -652,6 +756,90 @@ app.post('/api/insights/classify', async (req, res) => {
       n++;
     }
     res.json({ classified: n, remaining: getUnclassified(1).length > 0 });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/insights/timelines', (req, res) => {
+  try {
+    res.json(getTimelines());
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/insights/account-timeline', (req, res) => {
+  try {
+    res.json(getAccountTimeline());
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/insights/overview', (req, res) => {
+  try {
+    res.json(getOverview());
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/insights/alerts', (req, res) => res.json(getAlerts()));
+app.post('/api/insights/alerts/seen', (req, res) => {
+  markAlertsSeen();
+  res.json({ ok: true });
+});
+
+app.get('/api/insights/score-config', (req, res) => res.json(getScoreConfig()));
+app.put('/api/insights/score-config', (req, res) => {
+  try {
+    res.json(saveScoreConfig(req.body || {}));
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.get('/api/insights/learning', (req, res) => res.json(getLearningState()));
+app.put('/api/insights/learning', (req, res) => {
+  res.json(setLearningEnabled(req.body?.enabled !== false));
+});
+
+app.get('/api/insights/report', (req, res) => res.json(getLatestWeeklyReport()));
+app.get('/api/insights/reports', (req, res) => res.json(getWeeklyReports(12)));
+
+app.post('/api/insights/report', async (req, res) => {
+  try {
+    res.json(await createWeeklyReport(new Date()));
+  } catch (err) {
+    res.status(err.code === 'REPORT_RUNNING' ? 409 : 500).json({ error: err.message });
+  }
+});
+
+app.get('/api/insights/comment-ideas', (req, res) => {
+  try {
+    const raw = kvGetPublic('last_comment_ideas');
+    res.json(raw ? JSON.parse(raw) : { at: '', ideas: [] });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/insights/mine-comments', async (req, res) => {
+  try {
+    const fetched = await fetchRecentComments();
+    const comments = fetched.comments;
+    if (comments.length < 3) {
+      const failureNote = fetched.failed
+        ? ` ${fetched.failed} de ${fetched.attempted} posts falharam na API${fetched.lastError ? `: ${fetched.lastError}` : '.'}`
+        : '';
+      return res.json({ ideas: [], comments: comments.length, ...fetched,
+        note: `Poucos comentários ainda — a mineração fica boa a partir de ~10 comentários.${failureNote}` });
+    }
+    const ideas = await mineComments({ comments });
+    const payload = { at: new Date().toISOString(), ideas };
+    kvSetPublic('last_comment_ideas', JSON.stringify(payload));
+    res.json({ ...payload, comments: comments.length, attempted: fetched.attempted, failed: fetched.failed });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

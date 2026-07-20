@@ -20,6 +20,12 @@ const el = {};
   'runtimeStatus',
   'insightsSyncBtn', 'insightsClassifyBtn', 'insightsStatus', 'insightsMeta',
   'insightsSort', 'insightsFilter', 'insightsBody',
+  'alertsBanner', 'overviewCards', 'accountTimelineChart', 'scoreMode',
+  'scoreWeightSave', 'scoreWeightShare', 'scoreWeightEngagement', 'scoreWeightFollow',
+  'scoreWeightViews', 'scoreMinReach', 'scoreSaveBtn', 'scoreStatus',
+  'reportBtn', 'reportStatus', 'reportBox', 'reportHistory',
+  'learningEnabled', 'learningStatus', 'learningPreview',
+  'mineBtn', 'mineStatus', 'ideasList',
 ].forEach((id) => (el[id] = document.getElementById(id)));
 
 const FORMAT_LABELS = {
@@ -823,7 +829,262 @@ el.reelScheduleAllBtn.addEventListener('click', async () => {
 let insightsCache = [];
 let insightsPoller = null;
 
+let timelinesCache = {};
+let accountTimelineCache = [];
+let reportsCache = [];
+let insightsSupportLoaded = false;
+
+// Atalhos visuais. O cálculo e a validação definitivos acontecem no servidor.
+const SCORE_PRESETS = {
+  balanced: { saveRate: 3, shareRate: 3, engagementRate: 2, followRate: 3, viewsNorm: 1 },
+  growth: { saveRate: 1, shareRate: 3, engagementRate: 1, followRate: 6, viewsNorm: 2 },
+  authority: { saveRate: 5, shareRate: 4, engagementRate: 2, followRate: 1, viewsNorm: 0.5 },
+};
+
+function fillScoreForm(config) {
+  if (!config?.weights) return;
+  el.scoreMode.value = config.preset || 'custom';
+  el.scoreWeightSave.value = config.weights.saveRate;
+  el.scoreWeightShare.value = config.weights.shareRate;
+  el.scoreWeightEngagement.value = config.weights.engagementRate;
+  el.scoreWeightFollow.value = config.weights.followRate;
+  el.scoreWeightViews.value = config.weights.viewsNorm;
+  el.scoreMinReach.value = config.minReach;
+}
+
+function scoreFormPayload() {
+  return {
+    preset: el.scoreMode.value,
+    minReach: Number(el.scoreMinReach.value),
+    weights: {
+      saveRate: Number(el.scoreWeightSave.value),
+      shareRate: Number(el.scoreWeightShare.value),
+      engagementRate: Number(el.scoreWeightEngagement.value),
+      followRate: Number(el.scoreWeightFollow.value),
+      viewsNorm: Number(el.scoreWeightViews.value),
+    },
+  };
+}
+
+function sparklineSVG(igId) {
+  const points = (timelinesCache[igId] || []).filter((p) => p.views != null);
+  if (points.length < 2) return '<span class="hint">—</span>';
+  const w = 90, h = 24;
+  const max = Math.max(...points.map((p) => p.views), 1);
+  const min = Math.min(...points.map((p) => p.views));
+  const range = Math.max(max - min, 1);
+  const coords = points.map((p, i) =>
+    `${(i / (points.length - 1)) * w},${h - 2 - ((p.views - min) / range) * (h - 4)}`).join(' ');
+  return `<svg class="spark" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">
+    <polyline points="${coords}" fill="none" stroke="#63d68a" stroke-width="1.5"/>
+  </svg>`;
+}
+
+function renderAccountTimeline(points = accountTimelineCache) {
+  if (!points || points.length < 2) {
+    el.accountTimelineChart.innerHTML = '<span class="hint">O gráfico aparece depois de pelo menos dois snapshots.</span>';
+    return;
+  }
+  const width = 900, height = 220, left = 42, right = 16, top = 18, bottom = 30;
+  const times = points.map((point) => new Date(point.t).getTime());
+  const minTime = Math.min(...times), maxTime = Math.max(...times);
+  const values = points.flatMap((point) => [point.views || 0, point.reach || 0]);
+  const observedMin = Math.min(...values), observedMax = Math.max(1, ...values);
+  const observedRange = Math.max(observedMax - observedMin, 1);
+  const minValue = Math.max(0, observedMin - observedRange * 0.1);
+  const maxValue = observedMax + observedRange * 0.1;
+  const x = (time) => left + ((time - minTime) / Math.max(maxTime - minTime, 1)) * (width - left - right);
+  const y = (value) => top + (1 - (value - minValue) / Math.max(maxValue - minValue, 1)) * (height - top - bottom);
+  const path = (key) => points.map((point, index) =>
+    `${index ? 'L' : 'M'} ${x(new Date(point.t).getTime()).toFixed(1)} ${y(point[key] || 0).toFixed(1)}`
+  ).join(' ');
+  const grids = [0, 0.25, 0.5, 0.75, 1].map((ratio) => {
+    const labelValue = minValue + (maxValue - minValue) * ratio;
+    const gy = y(labelValue);
+    return `<line x1="${left}" x2="${width - right}" y1="${gy}" y2="${gy}" class="chart-grid"/>
+      <text x="${left - 8}" y="${gy + 4}" text-anchor="end" class="chart-label">${Math.round(labelValue)}</text>`;
+  }).join('');
+  const sameDay = new Date(minTime).toLocaleDateString('pt-BR') === new Date(maxTime).toLocaleDateString('pt-BR');
+  const dateOptions = sameDay ? { hour: '2-digit', minute: '2-digit' } : { day: '2-digit', month: '2-digit' };
+  const first = new Date(minTime).toLocaleString('pt-BR', dateOptions);
+  const last = new Date(maxTime).toLocaleString('pt-BR', dateOptions);
+  const latest = points[points.length - 1];
+  el.accountTimelineChart.innerHTML = `
+    <svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Evolução de views e alcance">
+      ${grids}
+      <path d="${path('views')}" class="chart-line views"/>
+      <path d="${path('reach')}" class="chart-line reach"/>
+      <text x="${left}" y="${height - 7}" class="chart-label">${first}</text>
+      <text x="${width - right}" y="${height - 7}" text-anchor="end" class="chart-label">${last}</text>
+    </svg>
+    <div class="timeline-latest">Agora: <strong>${latest.views || 0}</strong> views · <strong>${latest.reach || 0}</strong> alcance · ${latest.posts} posts fotografados</div>`;
+}
+
+async function loadAlerts() {
+  const alerts = await (await fetch('/api/insights/alerts')).json();
+  if (!alerts.length) {
+    el.alertsBanner.hidden = true;
+    return;
+  }
+  el.alertsBanner.hidden = false;
+  el.alertsBanner.className = 'alerts-banner';
+  el.alertsBanner.innerHTML = `
+    <ul>${alerts.map((a) => `<li>${a.message.replace(/</g, '&lt;')}</li>`).join('')}</ul>
+    <button class="icon-btn" id="alertsSeenBtn" title="Marcar como visto">✕</button>`;
+  document.getElementById('alertsSeenBtn').addEventListener('click', async () => {
+    await fetch('/api/insights/alerts/seen', { method: 'POST' });
+    el.alertsBanner.hidden = true;
+  });
+}
+
+function renderOverview(ov) {
+  if (!ov || !ov.posts) {
+    el.overviewCards.innerHTML = '';
+    return;
+  }
+  const fmt = (n) => (n == null ? '—' : n >= 1000 ? (n / 1000).toFixed(1).replace('.0', '') + 'k' : String(n));
+  const cards = [
+    [ov.posts, 'posts no banco'],
+    [ov.posts30d, 'posts (30d)'],
+    [fmt(ov.views), 'views totais'],
+    [fmt(ov.reach), 'alcance total'],
+    [fmt(ov.saves), 'saves'],
+    [fmt(ov.follows), ov.followsKnownPosts === ov.followsTotalPosts
+      ? 'seguidores de posts'
+      : `seguidores (${ov.followsKnownPosts || 0}/${ov.followsTotalPosts || 0} posts)`],
+    [ov.avgEngReels != null ? ov.avgEngReels + '%' : '—', 'eng médio reels'],
+    [ov.avgEngFeed != null ? ov.avgEngFeed + '%' : '—', 'eng médio feed'],
+  ];
+  el.overviewCards.innerHTML = cards
+    .map(([n, l]) => `<div class="ov-card"><div class="n">${n}</div><div class="l">${l}</div></div>`)
+    .join('');
+}
+
+// Markdown mínimo e seguro para os relatórios gerados pela IA.
+function miniMarkdown(md) {
+  const esc = md.replace(/&/g, '&amp;').replace(/</g, '&lt;');
+  const lines = esc.split('\n');
+  let html = '', listType = '';
+  const closeList = () => {
+    if (!listType) return '';
+    const close = `</${listType}>`;
+    listType = '';
+    return close;
+  };
+  for (const line of lines) {
+    if (/^#\s/.test(line)) {
+      html += closeList() + `<h1>${line.replace(/^#\s*/, '')}</h1>`;
+    } else if (/^##\s/.test(line)) {
+      html += closeList();
+      html += `<h2>${line.replace(/^##\s*/, '')}</h2>`;
+    } else if (/^###\s/.test(line)) {
+      html += closeList() + `<h3>${line.replace(/^###\s*/, '')}</h3>`;
+    } else if (/^[-*]\s/.test(line)) {
+      if (listType !== 'ul') html += closeList() + '<ul>';
+      listType = 'ul';
+      html += `<li>${line.replace(/^[-*]\s*/, '')}</li>`;
+    } else if (/^\d+\.\s/.test(line)) {
+      if (listType !== 'ol') html += closeList() + '<ol>';
+      listType = 'ol';
+      html += `<li>${line.replace(/^\d+\.\s*/, '')}</li>`;
+    } else if (/^---+$/.test(line.trim())) {
+      html += closeList() + '<hr>';
+    } else if (line.trim() === '') {
+      html += closeList();
+    } else {
+      html += closeList() + `<p>${line}</p>`;
+    }
+  }
+  html += closeList();
+  return html
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*([^*]+?)\*/g, '<em>$1</em>');
+}
+
+function showReport(report) {
+  if (!report?.markdown) {
+    el.reportBox.hidden = true;
+    return;
+  }
+  el.reportBox.hidden = false;
+  const period = report.periodStart
+    ? ` · semana de ${new Date(report.periodStart).toLocaleDateString('pt-BR')}`
+    : '';
+  el.reportBox.innerHTML =
+    `<div class="r-date">Gerado em ${fmtDate(report.generatedAt || report.at)}${period}</div>` + miniMarkdown(report.markdown);
+}
+
+function renderReportHistory(reports) {
+  reportsCache = reports || [];
+  if (!reportsCache.length) {
+    el.reportHistory.innerHTML = '<option value="">Nenhum relatório</option>';
+    showReport(null);
+    return;
+  }
+  el.reportHistory.innerHTML = reportsCache.map((report) => {
+    const label = `Semana de ${new Date(report.periodStart).toLocaleDateString('pt-BR')}`;
+    return `<option value="${report.weekKey}">${label}</option>`;
+  }).join('');
+  showReport(reportsCache[0]);
+}
+
+function showLearning(state) {
+  el.learningEnabled.checked = state.enabled !== false;
+  if (state.text) {
+    el.learningPreview.textContent = state.text;
+    const postLabel = state.eligibleCount === 1 ? 'post tem' : 'posts têm';
+    setStatus(el.learningStatus,
+      `${state.eligibleCount} de ${state.totalCount} ${postLabel} alcance confiável e pode orientar o gerador.`, 'ok');
+  } else {
+    el.learningPreview.textContent = state.enabled === false
+      ? 'Aprendizado desativado. O gerador usará somente o texto e o ângulo informados.'
+      : `Ainda não há amostra suficiente: ${state.eligibleCount || 0} ${state.eligibleCount === 1 ? 'post elegível' : 'posts elegíveis'}; são necessários pelo menos 5.`;
+    setStatus(el.learningStatus, '');
+  }
+}
+
+function renderIdeas(payload, { announce = false } = {}) {
+  const ideas = payload?.ideas || [];
+  el.ideasList.innerHTML = '';
+  for (const idea of ideas) {
+    const card = document.createElement('div');
+    card.className = 'idea-card';
+    card.innerHTML = `
+      <div>
+        <div class="i-text">${idea.idea.replace(/</g, '&lt;')} <span class="tag">${idea.format}</span></div>
+        <div class="i-evidence">${idea.evidence.replace(/</g, '&lt;')}</div>
+      </div>
+      <button class="secondary">Usar como ângulo</button>`;
+    card.querySelector('button').addEventListener('click', () => {
+      el.topic.value = idea.idea;
+      switchTab('post');
+      el.topic.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    });
+    el.ideasList.appendChild(card);
+  }
+  if (announce && ideas.length) {
+    const failures = payload.failed ? ` · ${payload.failed} posts falharam na API` : '';
+    setStatus(el.mineStatus, `${ideas.length} ideias extraídas de ${payload.comments} comentários${failures}.`, 'ok');
+  }
+}
+
 async function loadInsights() {
+  loadAlerts().catch(() => {});
+  fetch('/api/insights/overview').then((r) => r.json()).then(renderOverview).catch(() => {});
+  fetch('/api/insights/timelines').then((r) => r.json()).then((t) => { timelinesCache = t; renderInsights(); }).catch(() => {});
+  fetch('/api/insights/account-timeline').then((r) => r.json()).then((points) => {
+    accountTimelineCache = points;
+    renderAccountTimeline();
+  }).catch(() => {});
+
+  if (!insightsSupportLoaded) {
+    insightsSupportLoaded = true;
+    fetch('/api/insights/score-config').then((r) => r.json()).then(fillScoreForm).catch(() => {});
+    fetch('/api/insights/reports').then((r) => r.json()).then(renderReportHistory).catch(() => {});
+    fetch('/api/insights/learning').then((r) => r.json()).then(showLearning).catch(() => {});
+    fetch('/api/insights/comment-ideas').then((r) => r.json()).then((data) => renderIdeas(data)).catch(() => {});
+  }
+
   const status = await (await fetch('/api/insights/status')).json();
 
   if (status.permissionError) {
@@ -858,13 +1119,17 @@ function renderInsights() {
 
   const val = (r) => {
     if (sortKey === 'postedAt') return r.postedAt || '';
+    if (sortKey === 'score') return r.score ?? -1;
     if (['saveRate', 'shareRate', 'engagementRate', 'followRate'].includes(sortKey)) return r.rates[sortKey] ?? -1;
     return r.metrics[sortKey] ?? -1;
   };
-  rows.sort((a, b) => (val(b) > val(a) ? 1 : -1));
+  rows.sort((a, b) => {
+    const aValue = val(a), bValue = val(b);
+    return bValue === aValue ? 0 : bValue > aValue ? 1 : -1;
+  });
 
   if (!rows.length) {
-    el.insightsBody.innerHTML = '<tr><td colspan="12" class="hint">Nenhum dado — sincronize primeiro.</td></tr>';
+    el.insightsBody.innerHTML = '<tr><td colspan="13" class="hint">Nenhum dado — sincronize primeiro.</td></tr>';
     return;
   }
 
@@ -881,6 +1146,8 @@ function renderInsights() {
       <td class="post-cell">${srcTag}${themeTag}<a href="${r.permalink}" target="_blank" title="${label}">${label}</a></td>
       <td>${r.postedAt ? new Date(r.postedAt).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' }) : '—'}</td>
       <td>${tipo}</td>
+      <td>${sparklineSVG(r.igId)}</td>
+      <td class="score-cell">${r.score == null ? '—' : `<span class="score-pill confidence-${r.scoreConfidence}">${r.score}</span><small>${r.scoreConfidenceLabel}</small>`}</td>
       <td>${fmt(r.metrics.views)}</td>
       <td>${fmt(r.metrics.reach)}</td>
       <td>${fmt(r.metrics.likes)}</td>
@@ -888,11 +1155,118 @@ function renderInsights() {
       <td>${fmt(r.metrics.shares)}</td>
       <td>${fmt(r.metrics.saves)}</td>
       <td class="${r.rates.saveRate && r.rates.saveRate === bestSave ? 'best' : ''}">${pct(r.rates.saveRate)}</td>
-      <td>${pct(r.rates.shareRate)}</td>
       <td>${pct(r.rates.engagementRate)}</td>
     </tr>`;
   }).join('');
 }
+
+el.scoreMode.addEventListener('change', () => {
+  const preset = SCORE_PRESETS[el.scoreMode.value];
+  if (!preset) return;
+  el.scoreWeightSave.value = preset.saveRate;
+  el.scoreWeightShare.value = preset.shareRate;
+  el.scoreWeightEngagement.value = preset.engagementRate;
+  el.scoreWeightFollow.value = preset.followRate;
+  el.scoreWeightViews.value = preset.viewsNorm;
+  setStatus(el.scoreStatus, 'Pesos preenchidos — salve para recalcular.', 'ok');
+});
+
+[
+  el.scoreWeightSave, el.scoreWeightShare, el.scoreWeightEngagement,
+  el.scoreWeightFollow, el.scoreWeightViews,
+].forEach((input) => input.addEventListener('input', () => {
+  el.scoreMode.value = 'custom';
+  setStatus(el.scoreStatus, 'Pesos personalizados — salve para recalcular.', 'ok');
+}));
+
+el.scoreSaveBtn.addEventListener('click', async () => {
+  el.scoreSaveBtn.disabled = true;
+  setStatus(el.scoreStatus, 'Salvando e recalculando...');
+  try {
+    const res = await fetch('/api/insights/score-config', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(scoreFormPayload()),
+    });
+    const config = await res.json();
+    if (!res.ok) throw new Error(config.error);
+    fillScoreForm(config);
+    const [summaryRes, learningRes, overviewRes] = await Promise.all([
+      fetch('/api/insights/summary'),
+      fetch('/api/insights/learning'),
+      fetch('/api/insights/overview'),
+    ]);
+    insightsCache = await summaryRes.json();
+    showLearning(await learningRes.json());
+    renderOverview(await overviewRes.json());
+    renderInsights();
+    setStatus(el.scoreStatus, 'Configuração salva. Scores recalculados.', 'ok');
+  } catch (err) {
+    setStatus(el.scoreStatus, err.message, 'error');
+  } finally {
+    el.scoreSaveBtn.disabled = false;
+  }
+});
+
+el.reportHistory.addEventListener('change', () => {
+  showReport(reportsCache.find((report) => report.weekKey === el.reportHistory.value));
+});
+
+el.reportBtn.addEventListener('click', async () => {
+  el.reportBtn.disabled = true;
+  setStatus(el.reportStatus, 'IA analisando teus dados e escrevendo o relatório...');
+  try {
+    const res = await fetch('/api/insights/report', { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error);
+    const reports = await (await fetch('/api/insights/reports')).json();
+    renderReportHistory(reports);
+    el.reportHistory.value = data.weekKey;
+    showReport(data);
+    setStatus(el.reportStatus, 'Relatório da semana salvo no histórico.', 'ok');
+  } catch (err) {
+    setStatus(el.reportStatus, err.message, 'error');
+  } finally {
+    el.reportBtn.disabled = false;
+  }
+});
+
+el.learningEnabled.addEventListener('change', async () => {
+  el.learningEnabled.disabled = true;
+  try {
+    const res = await fetch('/api/insights/learning', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: el.learningEnabled.checked }),
+    });
+    const state = await res.json();
+    if (!res.ok) throw new Error(state.error);
+    showLearning(state);
+  } catch (err) {
+    setStatus(el.learningStatus, err.message, 'error');
+  } finally {
+    el.learningEnabled.disabled = false;
+  }
+});
+
+el.mineBtn.addEventListener('click', async () => {
+  el.mineBtn.disabled = true;
+  setStatus(el.mineStatus, 'Buscando comentários e minerando ideias...');
+  try {
+    const res = await fetch('/api/insights/mine-comments', { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error);
+    if (!data.ideas.length) {
+      setStatus(el.mineStatus, data.note || 'Nenhuma ideia extraída ainda.', 'ok');
+      return;
+    }
+    renderIdeas(data, { announce: true });
+  } catch (err) {
+    setStatus(el.mineStatus, err.message, 'error');
+  } finally {
+    el.mineBtn.disabled = false;
+  }
+});
 
 el.insightsSort.addEventListener('change', renderInsights);
 el.insightsFilter.addEventListener('change', renderInsights);
