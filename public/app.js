@@ -18,6 +18,8 @@ const el = {};
   'reelDistributeBtn', 'reelScheduleAllBtn', 'reelBatchStatus', 'reelBatchList',
   'itemModal', 'modalTitle', 'modalClose', 'modalBody', 'modalActions', 'modalStatus',
   'runtimeStatus',
+  'insightsSyncBtn', 'insightsClassifyBtn', 'insightsStatus', 'insightsMeta',
+  'insightsSort', 'insightsFilter', 'insightsBody',
 ].forEach((id) => (el[id] = document.getElementById(id)));
 
 const FORMAT_LABELS = {
@@ -83,6 +85,7 @@ document.querySelectorAll('.tab-btn').forEach((btn) => {
       p.classList.toggle('active', p.id === `tab-${btn.dataset.tab}`)
     );
     if (btn.dataset.tab === 'agenda') loadQueue();
+    if (btn.dataset.tab === 'insights') loadInsights();
   });
 });
 
@@ -813,6 +816,109 @@ el.reelScheduleAllBtn.addEventListener('click', async () => {
   }
   renderReelBatch();
   setStatus(el.reelBatchStatus, `${ok} reels agendados — veja na aba Agenda.`, 'ok');
+});
+
+// ------------------------------------------------------------ análise (insights)
+
+let insightsCache = [];
+let insightsPoller = null;
+
+async function loadInsights() {
+  const status = await (await fetch('/api/insights/status')).json();
+
+  if (status.permissionError) {
+    setStatus(el.insightsStatus,
+      'O token atual não tem a permissão de métricas (instagram_business_manage_insights). ' +
+      'No app da Meta: adicione a permissão, gere um token novo e troque no .env — a publicação continua funcionando.',
+      'error');
+  } else if (status.job?.running) {
+    setStatus(el.insightsStatus, `Coletando... ${status.job.stage}`);
+    if (!insightsPoller) insightsPoller = setInterval(loadInsights, 3000);
+  } else {
+    clearInterval(insightsPoller);
+    insightsPoller = null;
+    if (status.job?.error) setStatus(el.insightsStatus, `Erro na coleta: ${status.job.error}`, 'error');
+    else setStatus(el.insightsStatus, '');
+  }
+
+  el.insightsMeta.textContent = status.mediaCount
+    ? `${status.mediaCount} posts no banco (${status.appCount} publicados pelo app) · ${status.snapshotCount} snapshots acumulados · última coleta: ${status.lastSnapshotRun ? fmtDate(status.lastSnapshotRun) : 'nunca'} · coleta automática a cada 6h`
+    : 'Nenhum dado ainda — clique em "Sincronizar agora".';
+
+  const res = await fetch('/api/insights/summary');
+  insightsCache = await res.json();
+  renderInsights();
+}
+
+function renderInsights() {
+  const sortKey = el.insightsSort.value;
+  const filter = el.insightsFilter.value;
+
+  let rows = insightsCache.filter((r) => !filter || (filter === 'REELS' ? r.productType === 'REELS' : r.productType !== 'REELS'));
+
+  const val = (r) => {
+    if (sortKey === 'postedAt') return r.postedAt || '';
+    if (['saveRate', 'shareRate', 'engagementRate', 'followRate'].includes(sortKey)) return r.rates[sortKey] ?? -1;
+    return r.metrics[sortKey] ?? -1;
+  };
+  rows.sort((a, b) => (val(b) > val(a) ? 1 : -1));
+
+  if (!rows.length) {
+    el.insightsBody.innerHTML = '<tr><td colspan="12" class="hint">Nenhum dado — sincronize primeiro.</td></tr>';
+    return;
+  }
+
+  const fmt = (n) => (n == null ? '—' : n >= 1000 ? (n / 1000).toFixed(1).replace('.0', '') + 'k' : String(n));
+  const pct = (n) => (n == null ? '—' : n.toFixed(2) + '%');
+  const bestSave = Math.max(...rows.map((r) => r.rates.saveRate ?? 0));
+
+  el.insightsBody.innerHTML = rows.map((r, i) => {
+    const label = (r.hook || r.caption || '(sem texto)').replace(/</g, '&lt;').slice(0, 70);
+    const tipo = r.productType === 'REELS' ? '🎬 Reel' : r.mediaType === 'CAROUSEL_ALBUM' ? '🖼 Carrossel' : '📷 Imagem';
+    const srcTag = r.source === 'app' ? '<span class="tag app">app</span>' : '';
+    const themeTag = r.theme ? `<span class="tag">${r.theme.replace(/</g, '&lt;')}</span>` : '';
+    return `<tr class="${i < 3 && sortKey !== 'postedAt' ? 'top-row' : ''}">
+      <td class="post-cell">${srcTag}${themeTag}<a href="${r.permalink}" target="_blank" title="${label}">${label}</a></td>
+      <td>${r.postedAt ? new Date(r.postedAt).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' }) : '—'}</td>
+      <td>${tipo}</td>
+      <td>${fmt(r.metrics.views)}</td>
+      <td>${fmt(r.metrics.reach)}</td>
+      <td>${fmt(r.metrics.likes)}</td>
+      <td>${fmt(r.metrics.comments)}</td>
+      <td>${fmt(r.metrics.shares)}</td>
+      <td>${fmt(r.metrics.saves)}</td>
+      <td class="${r.rates.saveRate && r.rates.saveRate === bestSave ? 'best' : ''}">${pct(r.rates.saveRate)}</td>
+      <td>${pct(r.rates.shareRate)}</td>
+      <td>${pct(r.rates.engagementRate)}</td>
+    </tr>`;
+  }).join('');
+}
+
+el.insightsSort.addEventListener('change', renderInsights);
+el.insightsFilter.addEventListener('change', renderInsights);
+
+el.insightsSyncBtn.addEventListener('click', async () => {
+  const res = await fetch('/api/insights/sync', { method: 'POST' });
+  if (res.status === 409) return;
+  setStatus(el.insightsStatus, 'Coleta iniciada...');
+  if (!insightsPoller) insightsPoller = setInterval(loadInsights, 3000);
+});
+
+el.insightsClassifyBtn.addEventListener('click', async () => {
+  el.insightsClassifyBtn.disabled = true;
+  setStatus(el.insightsStatus, 'IA classificando posts antigos (tema, tipo de hook, CTA)...');
+  try {
+    const res = await fetch('/api/insights/classify', { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error);
+    setStatus(el.insightsStatus,
+      `${data.classified} posts classificados${data.remaining ? ' — clique de novo pra continuar o restante' : '. Todos classificados!'}`, 'ok');
+    loadInsights();
+  } catch (err) {
+    setStatus(el.insightsStatus, err.message, 'error');
+  } finally {
+    el.insightsClassifyBtn.disabled = false;
+  }
 });
 
 // ------------------------------------------------------------ init

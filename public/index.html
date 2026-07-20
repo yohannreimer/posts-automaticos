@@ -16,6 +16,7 @@
       <button class="tab-btn active" data-tab="agenda">📅 Agenda</button>
       <button class="tab-btn" data-tab="post">🖼️ Criar post</button>
       <button class="tab-btn" data-tab="reel">🎬 Criar reel</button>
+      <button class="tab-btn" data-tab="insights">📊 Análise</button>
     </nav>
   </header>
 
@@ -162,6 +163,50 @@
     </div>
 
     <div id="reelBatchList"></div>
+  </section>
+
+  <!-- ============================== ANÁLISE ============================== -->
+  <section id="tab-insights" class="tab-page">
+    <div class="panel">
+      <div class="queue-header">
+        <label>Métricas dos posts publicados</label>
+        <div style="display:flex; gap:10px;">
+          <button class="secondary" id="insightsClassifyBtn" style="width:auto;">Classificar antigos (IA)</button>
+          <button id="insightsSyncBtn" style="width:auto;">Sincronizar agora</button>
+        </div>
+      </div>
+      <div class="status" id="insightsStatus"></div>
+      <p class="hint" id="insightsMeta"></p>
+    </div>
+
+    <div class="panel" style="margin-top:16px;">
+      <div class="row" style="align-items:center; margin-bottom:12px;">
+        <label style="margin:0;">Ordenar por</label>
+        <select id="insightsSort" style="width:auto;">
+          <option value="postedAt">Mais recente</option>
+          <option value="views">Views</option>
+          <option value="reach">Alcance</option>
+          <option value="saveRate">Save rate</option>
+          <option value="shareRate">Share rate</option>
+          <option value="engagementRate">Engajamento/alcance</option>
+          <option value="followRate">Conversão em seguidores</option>
+        </select>
+        <select id="insightsFilter" style="width:auto;">
+          <option value="">Todos os formatos</option>
+          <option value="REELS">Só Reels</option>
+          <option value="FEED">Só feed (carrossel/imagem)</option>
+        </select>
+      </div>
+      <div class="insights-table-wrap">
+        <table class="insights-table" id="insightsTable">
+          <thead><tr>
+            <th>Post</th><th>Data</th><th>Tipo</th><th>Views</th><th>Alcance</th>
+            <th>❤️</th><th>💬</th><th>🔁</th><th>🔖</th><th>Save%</th><th>Share%</th><th>Eng%</th>
+          </tr></thead>
+          <tbody id="insightsBody"><tr><td colspan="12" class="hint">Sincronize pra carregar os dados.</td></tr></tbody>
+        </table>
+      </div>
+    </div>
   </section>
 
   <!-- ============================== MODAL ============================== -->

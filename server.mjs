@@ -20,6 +20,11 @@ import { createReelBatchStore } from './lib/reel-batch.mjs';
 import { createAwakeGuard } from './lib/mac-awake.mjs';
 import { recoverInterruptedPublications, runDuePublications } from './lib/scheduler.mjs';
 import {
+  syncMedia, linkQueueMetadata, snapshotAll, getSummary, getStatus as getAnalyticsStatus,
+  saveClassification, getUnclassified,
+} from './lib/analytics.mjs';
+import { classifyPosts } from './lib/claude.mjs';
+import {
   probeVideo, detectFormat, transcribeVideo, buildBlocks, buildEvents,
   renderOverlayPNGs, burnOverlays,
 } from './lib/captions.mjs';
@@ -585,6 +590,76 @@ app.post('/api/plan', async (req, res) => {
     }
   })();
 });
+
+// ------------------------------------------------------------ analytics
+
+const analyticsJob = { running: false, stage: '', error: '', lastResult: null };
+
+async function runAnalyticsCollection() {
+  if (analyticsJob.running) return;
+  if (!instagramEnabled()) return;
+  analyticsJob.running = true;
+  analyticsJob.error = '';
+  try {
+    analyticsJob.stage = 'sincronizando lista de posts...';
+    const count = await syncMedia();
+    analyticsJob.stage = 'vinculando posts do app...';
+    const linked = linkQueueMetadata(await readQueue());
+    analyticsJob.stage = 'coletando métricas (snapshots)...';
+    const snap = await snapshotAll({ log: console.log });
+    analyticsJob.lastResult = { media: count, linked, ...snap, at: new Date().toISOString() };
+    console.log(`[analytics] sync: ${count} posts, ${linked} vinculados, ${snap.done} snapshots (${snap.failed} falhas)`);
+  } catch (err) {
+    analyticsJob.error = err.message;
+    console.error('[analytics] erro:', err.message);
+  } finally {
+    analyticsJob.running = false;
+    analyticsJob.stage = '';
+  }
+}
+
+app.get('/api/insights/status', (req, res) => {
+  res.json({ ...getAnalyticsStatus(), job: analyticsJob });
+});
+
+app.get('/api/insights/summary', (req, res) => {
+  try {
+    res.json(getSummary());
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/insights/sync', (req, res) => {
+  if (analyticsJob.running) return res.status(409).json({ error: 'coleta já em andamento' });
+  runAnalyticsCollection();
+  res.json({ ok: true });
+});
+
+app.post('/api/insights/classify', async (req, res) => {
+  try {
+    const pending = getUnclassified(20);
+    if (!pending.length) return res.json({ classified: 0 });
+    const items = await classifyPosts(pending);
+    let n = 0;
+    for (const item of items) {
+      const post = pending[item.index];
+      if (!post) continue;
+      saveClassification(post.ig_id, {
+        theme: item.theme || '', hook_type: item.hook_type || '',
+        cta: item.cta || '', keywords: item.keywords || [],
+      });
+      n++;
+    }
+    res.json({ classified: n, remaining: getUnclassified(1).length > 0 });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// coleta automática: 90s após subir (não atrasa o boot) e depois a cada 6h
+setTimeout(runAnalyticsCollection, 90 * 1000);
+setInterval(runAnalyticsCollection, 6 * 3600 * 1000);
 
 const PORT = process.env.PORT || 4173;
 await reelBatchStore.load();
